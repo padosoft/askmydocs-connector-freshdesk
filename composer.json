@@ -1,0 +1,61 @@
+{
+    "name": "padosoft/askmydocs-connector-freshdesk",
+    "description": "Freshdesk connector for AskMyDocs: resumable ticket and knowledge base ingestion, attachments and read-only live tools.",
+    "type": "library",
+    "license": "Apache-2.0",
+    "require": {
+        "php": "^8.3",
+        "ext-curl": "*",
+        "ext-fileinfo": "*",
+        "illuminate/contracts": "^12.0|^13.0",
+        "illuminate/http": "^12.0|^13.0",
+        "illuminate/support": "^12.0|^13.0",
+        "illuminate/database": "^12.0|^13.0",
+        "illuminate/queue": "^12.0|^13.0",
+        "league/html-to-markdown": "^5.1",
+        "padosoft/askmydocs-connector-base": "^1.6",
+        "ext-zip": "*"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^10.0|^11.0",
+        "phpunit/phpunit": "^11.0|^12.0",
+        "mockery/mockery": "^1.6",
+        "phpstan/phpstan": "^2.0",
+        "laravel/pint": "^1.18"
+    },
+    "autoload": {
+        "psr-4": {
+            "Padosoft\\AskMyDocsConnectorFreshdesk\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Padosoft\\AskMyDocsConnectorFreshdesk\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Padosoft\\AskMyDocsConnectorFreshdesk\\FreshdeskServiceProvider"
+            ]
+        },
+        "askmydocs": {
+            "connectors": [
+                "Padosoft\\AskMyDocsConnectorFreshdesk\\FreshdeskConnector"
+            ]
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "analyse": "phpstan analyse --memory-limit=512M",
+        "format": "pint"
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/padosoft/askmydocs-connector-base"
+        }
+    ]
+}
