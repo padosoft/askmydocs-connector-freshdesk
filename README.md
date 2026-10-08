@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/readme/logo.svg" width="80" alt="Marchio del connettore: una cuffia per il supporto">
+  <img src="docs/readme/logo.svg" width="80" alt="Logo Freshdesk">
 </p>
 <p align="center">
   <img src="docs/readme/header.png" width="720" alt="Il robot trasforma un ticket e una guida in documenti consultabili nella knowledge base">

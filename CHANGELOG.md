@@ -2,6 +2,7 @@
 
 ## Unreleased — 2026-10-08
 
+- Logo SVG ufficiale Freshdesk nelle schede del connettore e nel README, servito localmente.
 - Connettore `freshdesk` con modulo credenziali, vault cifrato e impostazioni per installazione.
 - Importazione riprendibile di ticket, conversazioni, note private, articoli pubblicati e allegati compatibili.
 - Recupero storico una tantum, checkpoint persistenti, impronte dei contenuti, lock e gestione del limite di paginazione.
