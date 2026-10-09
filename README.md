@@ -9,7 +9,7 @@
 
 Ticket, conversazioni e articoli Freshdesk diventano conoscenza per AskMyDocs; sei strumenti di sola lettura permettono alla chat di consultare anche i dati aggiornati.
 
-Il pacchetto Composer è `padosoft/askmydocs-connector-freshdesk`, con namespace `Padosoft\AskMyDocsConnectorFreshdesk` e chiave di registro `freshdesk`. Richiede PHP **8.3+**, Laravel **12 o 13**, `ext-curl`, `ext-fileinfo`, `ext-zip` e `padosoft/askmydocs-connector-base ^1.6`. Licenza [Apache-2.0](LICENSE). Questa prima versione è disponibile localmente: non è stata pubblicata su Packagist.
+Il pacchetto Composer è `padosoft/askmydocs-connector-freshdesk`, con namespace `Padosoft\AskMyDocsConnectorFreshdesk` e chiave di registro `freshdesk`. Richiede PHP **8.3+**, Laravel **12 o 13**, `ext-curl`, `ext-fileinfo`, `ext-zip` e `padosoft/askmydocs-connector-base ^1.6`. Licenza [Apache-2.0](LICENSE). Il repository pubblico è [padosoft/askmydocs-connector-freshdesk](https://github.com/padosoft/askmydocs-connector-freshdesk); la versione `v1.0.0` si installa tramite un repository Composer VCS.
 
 ## Dal supporto alla knowledge base
 
@@ -21,23 +21,36 @@ Gli allegati di ticket e conversazioni diventano documenti separati: PDF, DOCX, 
 
 ## Installare e collegare un account
 
-In AskMyDocsDev il pacchetto è affiancato agli altri in `/Users/marco/packages/askmydocs-connector-freshdesk`. Dalla cartella dell'app:
+Nel progetto Laravel che ospita il connettore, configurare i repository GitHub e richiedere la versione:
+
+```bash
+composer config repositories.askmydocs-connector-freshdesk vcs https://github.com/padosoft/askmydocs-connector-freshdesk
+composer config repositories.askmydocs-connector-base vcs https://github.com/padosoft/askmydocs-connector-base
+composer require 'padosoft/askmydocs-connector-freshdesk:^1.0'
+php artisan vendor:publish --tag=connector-freshdesk-assets
+php artisan migrate
+```
+
+AskMyDocs include già entrambi i repository e la dipendenza nel manifest condiviso: una normale installazione con `composer install` usa il lockfile e abilita il provider Laravel tramite autodiscovery. Le migrazioni vengono caricate dal pacchetto. Il repository VCS di `askmydocs-connector-base` deve essere configurato nell'host perché Composer non eredita i repository delle dipendenze. L'host deve fornire `ConnectorIngestionContract`, il contesto tenant, il vault e la gestione delle installazioni. L'adattatore chat e le azioni amministrative fanno parte dell'integrazione AskMyDocs.
+
+### Sviluppare con il pacchetto locale
+
+In AskMyDocsDev il checkout è affiancato agli altri in `/Users/marco/packages/askmydocs-connector-freshdesk`. Per lavorare con un symlink:
 
 ```bash
 php scripts/install-freshdesk-local.php
 COMPOSER=composer.local.json composer update padosoft/askmydocs-connector-freshdesk --no-interaction
 php artisan vendor:publish --tag=connector-freshdesk-assets
-php artisan migrate --path=/Users/marco/packages/askmydocs-connector-freshdesk/database/migrations --realpath
-npm run build
+php artisan migrate
 ```
 
-Il manifest locale e il suo lockfile sono esclusi dai commit. Composer crea un symlink verso il pacchetto; il manifest condiviso dell'app rimane invariato. Il provider Laravel viene scoperto automaticamente e aggiunge il connettore al registro anche quando il lockfile condiviso non lo contiene.
+Il manifest locale e il suo lockfile sono esclusi dai commit. Lo script conserva gli override esistenti e aggiunge un repository `path` con symlink. Il manifest condiviso continua a richiedere `^1.0`; l'override locale usa `dev-main`. Usare `COMPOSER=composer.local.json` per i comandi di sviluppo; `composer install` ripristina le dipendenze del lockfile condiviso.
 
 Aprire [AskMyDocsDev su Herd](https://askmydocsdev.test), scegliere **Connectors → Freshdesk**, inserire dominio `azienda.freshdesk.com`, API key, etichetta dell'account e progetto. Il modulo verifica `/api/v2/agents/me` prima di salvare la chiave nel vault cifrato. **Sync now** accoda l'importazione; le impostazioni espongono la finestra, le note private e i limiti degli allegati. Gli account dello stesso tenant possono avere installazioni distinte.
 
 Le API REST v2 di Freshdesk richiedono [Basic Auth con API key](https://developers.freshdesk.com/api/#authentication). OAuth per accedere a queste API non è disponibile: [Freshworks lo ha chiarito](https://community.freshworks.dev/t/how-to-use-oauth-authentication-mechanism-for-freshdesk-api/1691). Gli esempi OAuth delle app Marketplace autorizzano servizi esterni, come Google Sheets, e non sostituiscono questa autenticazione. Verifica delle fonti: 8 ottobre 2026.
 
-Per un altro host Laravel, aggiungere un repository Composer `path` verso questa cartella, con `options.symlink=true` e `options.versions.padosoft/askmydocs-connector-freshdesk=dev-main`, quindi richiedere `dev-main`. Il repository VCS di `askmydocs-connector-base` deve essere configurato anche nell'host finché la dipendenza non è su Packagist. L'host deve fornire `ConnectorIngestionContract`, il contesto tenant, il vault e la gestione delle installazioni. L'adattatore chat e le azioni amministrative sono parte dell'integrazione AskMyDocsDev, non route aggiunte dal pacchetto.
+Per sviluppare in un altro host Laravel, aggiungere un repository Composer `path` verso il checkout, con `options.symlink=true` e `options.versions.padosoft/askmydocs-connector-freshdesk=dev-main`, quindi richiedere `dev-main` in un manifest locale ignorato da Git.
 
 ## Importare a lotti e riprendere
 
@@ -118,4 +131,4 @@ Per sviluppare usando il connector-base già installato nell'app, un `composer.l
 
 La suite usa Testbench, SQLite e HTTP simulato. Copre verifica e modifica delle credenziali, isolamento, note private, articoli annidati, download e OCR, limiti, retry, paginazione, ripresa, cancellazioni e assenza di nuove consegne per contenuti invariati. La matrice CI prevede Laravel 12/13 e PHP 8.3/8.4. La validazione effettuata localmente è su Laravel 13 e PHP 8.4; il collaudo con un account reale richiede dominio e API key nel modulo credenziali.
 
-Le illustrazioni sono asset originali; il marchio del pacchetto non è il logo ufficiale Freshdesk. [Prompt e provenienza delle illustrazioni](docs/readme/prompts.md) · [Changelog](CHANGELOG.md).
+Le illustrazioni sono asset originali. Il README riusa il logo Freshdesk; l'icona dell'interfaccia è un'interpretazione editoriale coerente con gli altri connettori. [Provenienza e diritti del marchio](public/icons/README.md) · [Prompt delle illustrazioni](docs/readme/prompts.md) · [Changelog](CHANGELOG.md).

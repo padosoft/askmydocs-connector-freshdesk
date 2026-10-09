@@ -3,6 +3,13 @@
     "description": "Freshdesk connector for AskMyDocs: resumable ticket and knowledge base ingestion, attachments and read-only live tools.",
     "type": "library",
     "license": "Apache-2.0",
+    "homepage": "https://github.com/padosoft/askmydocs-connector-freshdesk",
+    "keywords": ["laravel", "askmydocs", "freshdesk", "connectors", "knowledge-base", "rag"],
+    "authors": [{"name": "Padosoft", "homepage": "https://github.com/padosoft"}],
+    "support": {
+        "issues": "https://github.com/padosoft/askmydocs-connector-freshdesk/issues",
+        "source": "https://github.com/padosoft/askmydocs-connector-freshdesk"
+    },
     "require": {
         "php": "^8.3",
         "ext-curl": "*",
@@ -52,6 +59,7 @@
     },
     "minimum-stability": "stable",
     "prefer-stable": true,
+    "config": {"sort-packages": true},
     "repositories": [
         {
             "type": "vcs",
