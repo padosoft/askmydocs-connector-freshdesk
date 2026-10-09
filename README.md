@@ -77,6 +77,25 @@ I ticket non vengono rimossi quando escono dalla finestra. Una cancellazione vie
 
 Freshdesk non enumera globalmente i ticket archiviati accessibili soltanto con un ID noto: **Prendi tutto** copre lo storico scopribile dalle API, non un export completo dell'account. Documentazione di riferimento: [API REST v2 Freshdesk](https://developers.freshdesk.com/api/).
 
+## Contratto d'uso per l'orchestratore
+
+Il manifest Composer dichiara `extra.askmydocs.agent_usage.freshdesk`, che indica
+[`resources/agent-usage.json`](resources/agent-usage.json). Il profilo JSON usa il
+contratto comune AskMyDocs, versione `1`: contiene dominio, azioni logiche, criteri
+per scegliere `live`, `indexed` o `combined`, percorsi di ricerca e regole operative.
+
+Le domande sullo stato attuale o sui ticket di un cliente richiedono letture live;
+procedure e casi simili usano i contenuti indicizzati; applicare una procedura a un
+ticket combina entrambe le fonti. Le regole includono identità del richiedente,
+assegnatari, filtri strutturati, storico, paginazione, errori e precedenza dei dati
+live verificati sui campi attuali di uno stesso ticket.
+
+Un host compatibile scopre il profilo dai pacchetti installati e associa le azioni
+ai tool autorizzati della singola installazione. Il profilo non concede permessi e
+non avvia importazioni dalla chat; il codice host continua a verificare autorizzazioni,
+identità, budget e validità delle evidenze. Gli host precedenti ignorano il campo
+Composer aggiuntivo e continuano a usare il catalogo esistente.
+
 ## Consultare i dati in tempo reale
 
 ![Il robot affianca la ricerca nel libro alla consultazione di un ticket con la lente](docs/readme/scene-outcome.png)

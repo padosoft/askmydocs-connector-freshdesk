@@ -47,6 +47,9 @@
             ]
         },
         "askmydocs": {
+            "agent_usage": {
+                "freshdesk": "resources/agent-usage.json"
+            },
             "connectors": [
                 "Padosoft\\AskMyDocsConnectorFreshdesk\\FreshdeskConnector"
             ]

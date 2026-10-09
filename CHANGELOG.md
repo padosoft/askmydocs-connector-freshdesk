@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- Profilo d’uso JSON versione 1, scoperto tramite `extra.askmydocs.agent_usage`, con routing live/indice/combinato, workflow e regole di dominio per l’orchestratore.
+- Regole Freshdesk trasferite dal planner host al pacchetto: identità, richiedenti e assegnatari, storico, paginazione, fallimenti e aggiornamento dei dati.
+
 ## [1.0.0] — 2026-10-09
 
 - Prima versione installabile da GitHub tramite Composer con vincolo `^1.0`.

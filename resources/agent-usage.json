@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "connector": "freshdesk",
+  "summary": "Freshdesk provides current support tickets, requester and agent identities, conversations and published articles through read-only live tools. Its ingested documents provide semantic search over ticket history, conversations, articles and extracted attachments.",
+  "tools": ["list_tickets", "search_tickets", "search_contacts", "get_contact", "search_agents", "get_ticket", "list_conversations", "search_articles", "get_article"],
+  "routing": [
+    {
+      "id": "current_ticket",
+      "intent": "Current ticket state, priority, assignment, latest content or recent conversation. Verify current fields with live tools rather than an indexed snapshot.",
+      "mode": "live",
+      "tools": ["get_ticket", "list_conversations"],
+      "examples": ["Qual è lo stato attuale del ticket #99?", "Who is assigned to ticket #99?", "Qual è l'ultima risposta al ticket #99?"]
+    },
+    {
+      "id": "requester_tickets",
+      "intent": "Tickets requested by a customer or person. Resolve a named requester before listing their tickets; an explicit email can be used directly.",
+      "mode": "live",
+      "tools": ["search_contacts", "get_contact", "list_tickets", "get_ticket"],
+      "examples": ["Quali ticket ha questo cliente?", "Che ticket ha Anne Richard?", "List tickets requested by anne@example.test"]
+    },
+    {
+      "id": "assigned_tickets",
+      "intent": "Tickets explicitly assigned to a support agent. Resolve the agent, then use structured filtering with the verified agent ID.",
+      "mode": "live",
+      "tools": ["search_agents", "search_tickets", "get_ticket"],
+      "examples": ["Ticket assegnati a Anne Richard", "Which tickets are assigned to this support agent?"]
+    },
+    {
+      "id": "documented_solutions",
+      "intent": "Documented procedures, similar resolved cases, historical explanations and attachment content. Search ingested documents semantically. Indexed historical observations do not establish a ticket's current operational state.",
+      "mode": "indexed",
+      "tools": [],
+      "examples": ["Come abbiamo risolto problemi simili?", "Qual è la procedura documentata per questo errore?", "Find previous cases about this attachment's contents"]
+    },
+    {
+      "id": "current_article",
+      "intent": "The currently published version of a Freshdesk article. Search by keyword or retrieve its known ID live when the user requests the latest original source.",
+      "mode": "live",
+      "tools": ["search_articles", "get_article"],
+      "examples": ["Leggi la versione attuale dell'articolo #42", "Find the currently published Freshdesk article about password resets"]
+    },
+    {
+      "id": "ticket_with_procedure",
+      "intent": "Apply a documented procedure or compare a current ticket with previous cases. Retrieve the current ticket live and combine it with relevant indexed documents, keeping current records distinct from historical observations.",
+      "mode": "combined",
+      "tools": ["get_ticket", "list_conversations"],
+      "examples": ["Quale procedura si applica al ticket #99?", "Compare this ticket with similar resolved cases"]
+    }
+  ],
+  "workflows": [
+    {
+      "id": "named_requester",
+      "intent": "Retrieve tickets for a customer identified by name.",
+      "steps": [
+        {"tool": "search_contacts", "purpose": "Resolve the requester; continue only with a unique full-name match or a user-selected contact."},
+        {"tool": "list_tickets", "purpose": "Use the returned requester_id, respecting any requested period; continue pagination while has_more=true."}
+      ]
+    },
+    {
+      "id": "named_assignee",
+      "intent": "Retrieve tickets explicitly assigned to a named support agent.",
+      "steps": [
+        {"tool": "search_agents", "purpose": "Resolve the explicitly requested support agent without guessing an ID."},
+        {"tool": "search_tickets", "purpose": "Filter with agent_id:<returned ID>, adding only explicitly requested filters."}
+      ]
+    },
+    {
+      "id": "ticket_conversation",
+      "intent": "Read a known ticket and its conversation when conversation details are needed.",
+      "steps": [
+        {"tool": "get_ticket", "purpose": "Retrieve the explicitly supplied ticket ID or a ticket identified by current authorized evidence."},
+        {"tool": "list_conversations", "purpose": "Read conversations for that verified ticket when required by the question, continuing remaining pages."}
+      ]
+    },
+    {
+      "id": "published_article",
+      "intent": "Locate and read a currently published article.",
+      "steps": [
+        {"tool": "search_articles", "purpose": "Search published articles by discriminating keywords."},
+        {"tool": "get_article", "purpose": "Read the matching article using its returned ID; resolve ambiguous candidates before choosing."}
+      ]
+    }
+  ],
+  "rules": [
+    {"id": "requester_semantics", "instruction": "A generic person's tickets means tickets requested by that customer, not assigned to an agent. Resolve the name with search_contacts, then get_contact if identity details are needed, then list_tickets using the returned requester_id."},
+    {"id": "assigned_semantics", "instruction": "Only explicit assigned/agent requests use search_agents followed by search_tickets with agent_id:<returned ID>."},
+    {"id": "structured_ticket_search", "instruction": "Never use requester:<name>, a bare quoted name, or an invented ID in search_tickets. This tool performs structured filtering, not full text search; use indexed documents for semantic content searches."},
+    {"id": "verified_identity", "instruction": "A unique full-name match or a user-selected row is required before using a person's ID. meta.ambiguous=true requires selection even for a single partial match."},
+    {"id": "literal_email", "instruction": "When the user supplies an email, list_tickets can use that literal email."},
+    {"id": "requester_history", "instruction": "Without a requested period, requester lookups cover all enumerable history, including closed tickets."},
+    {"id": "pagination", "instruction": "Continue pagination while has_more=true; truncated or unvisited pages prevent a complete answer. Enumerable history does not include undiscoverable archived tickets; preserve declared coverage limitations."},
+    {"id": "failed_actions", "instruction": "Failed actions are diagnostics, never evidence of a missing ticket."},
+    {"id": "nonretryable_failures", "instruction": "A nonretryable failed request must not be repeated by adding page:1 or changing outer quotes; change strategy instead."},
+    {"id": "source_access", "instruction": "Authentication/permission failures disable that source for the run; do not describe an indexed snapshot as a successful live verification."},
+    {"id": "freshness", "instruction": "For current status, priority, assignment or latest conversation, verify the same ticket in the same account live. Treat indexed content as a snapshot. If a successful current live result updates that snapshot, use the live value for the current fact and label historical values as historical. If identity, time or scope cannot be reconciled, report the discrepancy instead of inventing a single value."}
+  ]
+}
