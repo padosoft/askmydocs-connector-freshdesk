@@ -74,7 +74,10 @@ Freshdesk non enumera globalmente i ticket archiviati accessibili soltanto con u
 
 | Suffisso dello strumento | Argomenti | Operazione |
 | --- | --- | --- |
-| `list_tickets` | `updated_since?`, `page?`, `per_page?` | Ticket aggiornati; default 90 giorni, massimo 100 per pagina |
+| `list_tickets` | `requester_id?` oppure `email?`, `updated_since?`, `page?`, `per_page?` | Tutti gli stati, inclusi i chiusi. Default dal 1970 per il richiedente; 90 giorni per gli elenchi generici, massimo 100 per pagina |
+| `search_contacts` | `term` | Autocomplete cliente; solo un nome completo unico permette continuazione automatica |
+| `get_contact` | `id` | Identità corrente del cliente con nome ed email |
+| `search_agents` | `term` | Autocomplete operatore per richieste esplicite sui ticket assegnati |
 | `search_tickets` | `query`, `page?` | Filtro strutturato Freshdesk, per esempio `status:2`; massimo 10 pagine |
 | `get_ticket` | `id` | Dettaglio di un ticket |
 | `list_conversations` | `id`, `page?` | Conversazioni; rispetta l'impostazione delle note private |
@@ -132,3 +135,11 @@ Per sviluppare usando il connector-base già installato nell'app, un `composer.l
 La suite usa Testbench, SQLite e HTTP simulato. Copre verifica e modifica delle credenziali, isolamento, note private, articoli annidati, download e OCR, limiti, retry, paginazione, ripresa, cancellazioni e assenza di nuove consegne per contenuti invariati. La matrice CI prevede Laravel 12/13 e PHP 8.3/8.4. La validazione effettuata localmente è su Laravel 13 e PHP 8.4; il collaudo con un account reale richiede dominio e API key nel modulo credenziali.
 
 Le illustrazioni sono asset originali. Il README riusa il logo Freshdesk; l'icona dell'interfaccia è un'interpretazione editoriale coerente con gli altri connettori. [Provenienza e diritti del marchio](public/icons/README.md) · [Prompt delle illustrazioni](docs/readme/prompts.md) · [Changelog](CHANGELOG.md).
+
+### Identità, copertura ed errori dei tool live
+
+La ricerca per persona segue `search_contacts` → `get_contact` → `list_tickets(requester_id)`. Per gli operatori segue `search_agents` → `search_tickets(query: agent_id:ID)`. Gli ID devono provenire dalla stessa installazione; omonimi e corrispondenze parziali hanno `meta.ambiguous=true` e richiedono una selezione. `query` accetta solo espressioni Freshdesk: un nome libero o `requester:Nome` viene rifiutato localmente senza HTTP.
+
+Il catalogo dichiara `outputSchema` e `capability` con `records`, identità e collegamenti. I risultati conservano richiedente, assegnatario, stato, priorità e URL. `has_more`, `truncated` e `coverage` dichiarano periodo, filtri, limite di paginazione e archiviazione; il client deve continuare le pagine entro il proprio budget. Una pagina finale non recupera record tagliati nelle pagine precedenti.
+
+Gli errori mantengono il campo stringa `error` e aggiungono `error_code`, `http_status`, `retryable`, `validation_fields` sanificati e `physical_request_count`. Un 400 richiede una strategia diversa, 401/403 interrompono quella fonte; 429 e 5xx sono recuperabili con tentativi limitati. Un errore non è un elenco vuoto.

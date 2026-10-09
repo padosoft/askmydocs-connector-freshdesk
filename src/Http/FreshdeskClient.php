@@ -60,7 +60,21 @@ final class FreshdeskClient
                 continue;
             }
             if (! $response->successful()) {
-                throw new FreshdeskApiException($response->status(), max(1, (int) $response->header('Retry-After')));
+                $fields = [];
+                if ($response->status() === 400) {
+                    try {
+                        $error = json_decode(self::readLimited($response, 16384), true, 32, JSON_THROW_ON_ERROR);
+                        foreach (array_slice((array) ($error['errors'] ?? []), 0, 10) as $field) {
+                            if (is_array($field) && preg_match('/^[a-z][a-z0-9_.]{0,63}$/D', (string) ($field['field'] ?? ''))
+                                && in_array($field['code'] ?? '', ['invalid_value', 'invalid_field', 'missing_field', 'invalid_json'], true)) {
+                                $fields[] = ['field' => $field['field'], 'code' => $field['code']];
+                            }
+                        }
+                    } catch (\Throwable) {
+                        // Diagnostic bodies cannot replace the original HTTP failure.
+                    }
+                }
+                throw new FreshdeskApiException($response->status(), max(1, (int) $response->header('Retry-After')), $fields);
             }
             $body = self::readLimited($response, (int) config('connector-freshdesk.http.max_json_bytes', 2_000_000));
             try {

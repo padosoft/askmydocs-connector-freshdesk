@@ -230,10 +230,10 @@ final class FreshdeskTest extends TestCase
         $b = $this->authorized();
         $other = $this->installation([], 'tenant-b');
         $tools = app(FreshdeskTools::class);
-        $this->assertCount(12, $tools->catalog('support'));
+        $this->assertCount(18, $tools->catalog('support'));
         $this->assertSame([], $tools->catalog('other'));
         $names = array_column($tools->catalog('support'), 'name');
-        $this->assertCount(12, array_unique($names));
+        $this->assertCount(18, array_unique($names));
         $this->expectException(\RuntimeException::class);
         $tools->execute('freshdesk_'.$other->id.'_get_ticket', ['id' => 1], 'support');
     }
