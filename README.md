@@ -7,7 +7,7 @@
 
 # AskMyDocs Connector Freshdesk
 
-Ticket, conversazioni e articoli Freshdesk diventano conoscenza per AskMyDocs; sei strumenti di sola lettura permettono alla chat di consultare anche i dati aggiornati.
+Ticket, conversazioni e articoli Freshdesk diventano conoscenza per AskMyDocs; nove strumenti di sola lettura permettono alla chat di consultare anche i dati aggiornati.
 
 Il pacchetto Composer è `padosoft/askmydocs-connector-freshdesk`, con namespace `Padosoft\AskMyDocsConnectorFreshdesk` e chiave di registro `freshdesk`. Richiede PHP **8.3+**, Laravel **12 o 13**, `ext-curl`, `ext-fileinfo`, `ext-zip` e `padosoft/askmydocs-connector-base ^1.6`. Licenza [Apache-2.0](LICENSE). Il repository pubblico è [padosoft/askmydocs-connector-freshdesk](https://github.com/padosoft/askmydocs-connector-freshdesk); la versione `v1.0.0` si installa tramite un repository Composer VCS.
 
@@ -15,7 +15,7 @@ Il pacchetto Composer è `padosoft/askmydocs-connector-freshdesk`, con namespace
 
 ![Il robot raccoglie ticket, conversazioni e allegati nello stesso libro](docs/readme/scene-concept.png)
 
-La prima importazione comprende i ticket aggiornati negli ultimi **90 giorni**, la descrizione, le conversazioni pubbliche e le note private. La finestra è modificabile; le note private sono inizialmente incluse e possono essere disattivate. Gli articoli pubblicati vengono enumerati per categorie e cartelle, comprese quelle annidate, nella lingua predefinita dell'account.
+La prima sincronizzazione ordinaria comprende i ticket aggiornati negli ultimi **90 giorni**, la descrizione, le conversazioni pubbliche e le note private. La finestra è modificabile; **Prendi tutto** avvia separatamente il recupero dello storico enumerabile dalle API. Le note private sono inizialmente incluse e possono essere disattivate. Gli articoli pubblicati vengono enumerati per categorie e cartelle, comprese quelle annidate, nella lingua predefinita dell'account.
 
 Gli allegati di ticket e conversazioni diventano documenti separati: PDF, DOCX, TXT e Markdown. Le immagini PNG, JPEG, TIFF e WebP richiedono l'OCR abilitato nell'app. I limiti predefiniti sono **25 MiB per file** e **20 allegati per ticket**, modificabili nelle impostazioni dell'installazione. Dimensione effettiva, MIME e struttura DOCX vengono controllati dopo il download.
 
@@ -46,7 +46,7 @@ php artisan migrate
 
 Il manifest locale e il suo lockfile sono esclusi dai commit. Lo script conserva gli override esistenti e aggiunge un repository `path` con symlink. Il manifest condiviso continua a richiedere `^1.0`; l'override locale usa `dev-main`. Usare `COMPOSER=composer.local.json` per i comandi di sviluppo; `composer install` ripristina le dipendenze del lockfile condiviso.
 
-Aprire [AskMyDocsDev su Herd](https://askmydocsdev.test), scegliere **Connectors → Freshdesk**, inserire dominio `azienda.freshdesk.com`, API key, etichetta dell'account e progetto. Il modulo verifica `/api/v2/agents/me` prima di salvare la chiave nel vault cifrato. **Sync now** accoda l'importazione; le impostazioni espongono la finestra, le note private e i limiti degli allegati. Gli account dello stesso tenant possono avere installazioni distinte.
+Aprire [AskMyDocsDev su Herd](https://askmydocsdev.test), scegliere **Connectors → Freshdesk**, inserire dominio `azienda.freshdesk.com`, API key, etichetta dell'account e progetto. Il modulo verifica `/api/v2/agents/me` prima di salvare la chiave nel vault cifrato. **Sync now** accoda o riprende la sincronizzazione ordinaria; le impostazioni espongono la finestra, le note private e i limiti degli allegati. Gli account dello stesso tenant possono avere installazioni distinte.
 
 Le API REST v2 di Freshdesk richiedono [Basic Auth con API key](https://developers.freshdesk.com/api/#authentication). OAuth per accedere a queste API non è disponibile: [Freshworks lo ha chiarito](https://community.freshworks.dev/t/how-to-use-oauth-authentication-mechanism-for-freshdesk-api/1691). Gli esempi OAuth delle app Marketplace autorizzano servizi esterni, come Google Sheets, e non sostituiscono questa autenticazione. Verifica delle fonti: 8 ottobre 2026.
 
@@ -56,11 +56,22 @@ Per sviluppare in un altro host Laravel, aggiungere un repository Composer `path
 
 ![Il robot marca il punto di ripresa tra lotti di documenti sul nastro](docs/readme/scene-workflow.png)
 
+La sincronizzazione ordinaria e il recupero dello storico usano la stessa pipeline asincrona, con due modalità distinte:
+
+| Modalità | Avvio | Periodo dei ticket |
+| --- | --- | --- |
+| Ordinaria (`window`) | `SyncManager::start($installation)` | Alla prima scansione usa `date_window_days`, con default di 90 giorni. Le scansioni successive usano il watermark dell'ultima scansione completata entro questa finestra; ampliarla permette di recuperare anche il periodo aggiunto. |
+| Storico (`history`, **Prendi tutto**) | `SyncManager::start($installation, history: true)` | Recupera i ticket enumerabili dalle API dal `1970-01-01T00:00:00Z` fino all'avvio della scansione, indipendentemente dalla finestra ordinaria. |
+
+Entrambe le modalità enumerano gli articoli pubblicati senza applicare la finestra temporale dei ticket.
+
+`FreshdeskConnector::syncFull($installationId)` e `syncIncremental($installationId, $since)` chiamano entrambi `SyncManager::start($installation)` e accodano o riprendono una scansione. Il nome `syncFull` non attiva il recupero dello storico: per quello serve `history: true`. Il parametro `$since` di `syncIncremental` non viene usato; il punto di ripresa e il watermark sono gestiti dai checkpoint persistenti del pacchetto. Se esiste già una scansione ordinaria o storica in coda, in corso o fallita, l'avvio ordinario la riusa e riprende quella fallita.
+
 `SyncManager` conserva lo stato nelle tabelle `freshdesk_sync_runs` e `freshdesk_source_states`, isolate per tenant e installazione. `ProcessSyncBatch` lavora a lotti con un lock atomico per installazione. Identificativi remoti, percorsi stabili e impronte dei contenuti evitano di consegnare nuovamente documenti invariati. L'app applica l'upsert dei documenti per percorso durante l'ingestione: anche una ripetizione dopo un arresto tra dispatch e checkpoint conserva l'identità del documento.
 
-Il checkpoint salva fase, pagina e ticket o articoli ancora da elaborare. Il watermark temporale viene consolidato dopo il completamento dell'intera scansione, prendendo l'ora d'inizio come limite superiore dei ticket. I passaggi successivi sovrappongono 120 secondi al watermark completato. Al limite delle 300 pagine, una scansione ordinata per `updated_at` riparte dall'ultimo timestamp meno un secondo; se non riesce ad avanzare, mostra un errore e resta incompleta.
+Il checkpoint salva fase, pagina e ticket o articoli ancora da elaborare. Il watermark temporale viene consolidato dopo il completamento dell'intera scansione, prendendo l'ora d'inizio come limite superiore dei ticket. Le sincronizzazioni ordinarie successive sovrappongono 120 secondi al watermark completato entro la finestra configurata. Al limite delle 300 pagine, una scansione ordinata per `updated_at` riparte dall'ultimo timestamp meno un secondo; se non riesce ad avanzare, mostra un errore e resta incompleta.
 
-**Prendi tutto** richiede `SyncManager::start($installation, history: true)`: parte dallo storico enumerabile, conserva il periodo ordinario e restituisce il recupero già attivo a una seconda richiesta. Un recupero fallito può riprendere dal suo checkpoint. Il registro generico delle azioni dell'app espone stato, conteggi ed errore; i conteggi riguardano i documenti consegnati alla pipeline, che completa estrazione e indicizzazione in coda.
+**Prendi tutto** è un recupero storico una tantum: conserva `date_window_days`, quindi le sincronizzazioni ordinarie successive mantengono la finestra configurata. Una seconda richiesta durante un recupero storico già in coda o in corso restituisce la stessa scansione; un recupero fallito riprende dal suo checkpoint. Il registro generico delle azioni dell'app espone stato, conteggi ed errore; i conteggi riguardano i documenti consegnati alla pipeline, che completa estrazione e indicizzazione in coda.
 
 I ticket non vengono rimossi quando escono dalla finestra. Una cancellazione viene applicata quando il filtro Freshdesk `deleted` la conferma. Per un articolo scomparso dall'elenco viene richiesto il dettaglio: `404` conferma la rimozione; un articolo passato a bozza viene rimosso. Un `404` di ticket non basta, perché può trattarsi di un ticket archiviato. Disattivare le note private provoca, alla sincronizzazione successiva, anche l'aggiornamento dei ticket storici già importati.
 
@@ -70,7 +81,7 @@ Freshdesk non enumera globalmente i ticket archiviati accessibili soltanto con u
 
 ![Il robot affianca la ricerca nel libro alla consultazione di un ticket con la lente](docs/readme/scene-outcome.png)
 
-`Tools\FreshdeskTools` offre catalogo ed esecutore indipendenti. Ogni nome contiene l'ID dell'installazione, per esempio `freshdesk_42_get_ticket`. Il catalogo richiede un progetto esplicito e contiene soltanto installazioni attive del tenant corrente associate a quel progetto. L'esecuzione ripete queste verifiche e rifiuta gli argomenti sconosciuti.
+`Tools\FreshdeskTools` offre catalogo ed esecutore indipendenti con **nove strumenti di sola lettura per ogni installazione**. Ogni nome contiene l'ID dell'installazione, per esempio `freshdesk_42_get_ticket`. Il catalogo richiede un progetto esplicito e contiene soltanto installazioni attive del tenant corrente associate a quel progetto. L'esecuzione ripete queste verifiche e rifiuta gli argomenti sconosciuti.
 
 | Suffisso dello strumento | Argomenti | Operazione |
 | --- | --- | --- |
