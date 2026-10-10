@@ -6,6 +6,8 @@ namespace Padosoft\AskMyDocsConnectorFreshdesk\Http;
 
 use Closure;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Padosoft\AskMyDocsConnectorFreshdesk\Exceptions\FreshdeskApiException;
@@ -45,10 +47,10 @@ final class FreshdeskClient
         for ($attempt = 1; $attempt <= $attempts; $attempt++) {
             $this->countRequest();
             try {
-                $response = Http::acceptJson()->withBasicAuth($this->apiKey, 'X')
+                $response = self::readOnly(Http::acceptJson()->withBasicAuth($this->apiKey, 'X')
                     ->connectTimeout((int) config('connector-freshdesk.http.connect_timeout', 5))
                     ->timeout((int) config('connector-freshdesk.http.timeout', 15))
-                    ->withOptions($options)->get($url, $query);
+                    ->withOptions($options))->get($url, $query);
             } catch (ConnectionException) {
                 if ($attempt === $attempts) {
                     throw new \RuntimeException('Freshdesk connection timed out or could not be established.');
@@ -98,7 +100,7 @@ final class FreshdeskClient
             $this->countRequest();
             try {
                 // The API key is deliberately absent, including on same-domain downloads.
-                $response = Http::connectTimeout(5)->timeout(60)->withOptions($options)->get($url);
+                $response = self::readOnly(Http::connectTimeout(5)->timeout(60)->withOptions($options))->get($url);
             } catch (ConnectionException) {
                 throw new \RuntimeException('Freshdesk attachment download failed.');
             }
@@ -126,6 +128,16 @@ final class FreshdeskClient
             ($this->beforeRequest)();
         }
         $this->physicalRequests++;
+    }
+
+    /** Guard the transport itself, including credential probes and attachment redirects. */
+    private static function readOnly(PendingRequest $request): PendingRequest
+    {
+        return $request->beforeSending(static function (Request $outgoing): void {
+            if ($outgoing->method() !== 'GET') {
+                throw new \LogicException('Freshdesk transport only permits GET requests.');
+            }
+        });
     }
 
     public static function readLimited(Response $response, int $maxBytes): string
