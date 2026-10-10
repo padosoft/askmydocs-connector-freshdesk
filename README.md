@@ -46,7 +46,40 @@ php artisan migrate
 
 Il manifest locale e il suo lockfile sono esclusi dai commit. Lo script conserva gli override esistenti e aggiunge un repository `path` con symlink. Il manifest condiviso continua a richiedere `^1.0`; l'override locale usa `dev-main`. Usare `COMPOSER=composer.local.json` per i comandi di sviluppo; `composer install` ripristina le dipendenze del lockfile condiviso.
 
-Aprire [AskMyDocsDev su Herd](https://askmydocsdev.test), scegliere **Connectors → Freshdesk**, inserire dominio `azienda.freshdesk.com`, API key, etichetta dell'account e progetto. Il modulo verifica `/api/v2/agents/me` prima di salvare la chiave nel vault cifrato. **Sync now** accoda o riprende la sincronizzazione ordinaria; le impostazioni espongono la finestra, le note private e i limiti degli allegati. Gli account dello stesso tenant possono avere installazioni distinte.
+Aprire [AskMyDocsDev su Herd](https://askmydocsdev.test), scegliere **Connectors → Freshdesk**, inserire dominio `azienda.freshdesk.com`, API key, etichetta dell'account e progetto. Il modulo verifica `/api/v2/agents/me` prima di salvare la chiave nel vault cifrato. **Sync now** accoda o riprende la sincronizzazione ordinaria; **Edit → Sync settings** espone gli interruttori delle funzionalità, la finestra, le note private e i limiti degli allegati. Gli account dello stesso tenant possono avere installazioni distinte.
+
+### Attivare le funzionalità per connessione
+
+`FreshdeskConnector::connectionSettingsSchema()` espone tre checkbox nel gruppo **Features**. La UI generica di AskMyDocs le legge da `connection_settings_schema` e usa i valori correnti di `settings`; ciascuna preferenza è salvata in `config_json` della singola installazione.
+
+| Impostazione | Default dell'installazione | Comportamento |
+| --- | --- | --- |
+| `ingestion.enabled` | `true` | Abilita ingest ordinario e storico. Se disattivato, lo scheduler salta l'importazione, gli avvii manuali vengono rifiutati e i lotti pendenti passano a `paused`, conservando checkpoint e watermark. I documenti già importati restano nella KB. |
+| `chat_tools.enabled` | `true` | Abilita tutti i nove strumenti live della connessione. Se disattivato, spariscono dal catalogo e le chiamate successive, anche attraverso un tool già selezionato, vengono bloccate. Non dipende dall'ingest. |
+| `case_studies.enabled` | `true` | Abilita generazione e uso delle schede problema → causa → intervento → esito. Richiede il supporto e l'abilitazione globale dell'host; la generazione richiede anche l'ingest. Se disattivato, le schede conservate vengono escluse da indicizzazione e ricerca e i job di generazione si sospendono. |
+
+Gli interruttori hanno effetto al salvataggio, prima delle richieste successive e delle nuove consegne alla pipeline. Una richiesta già in corso può terminare; i documenti grezzi già consegnati alla pipeline KB possono completare l'indicizzazione. Verifica credenziali e health check rimangono letture GET disponibili per diagnosticare la connessione.
+
+Riattivare l'ingest permette di riprendere lo stesso import con **Sync now**, **Prendi tutto** o il successivo passaggio dello scheduler. Al successivo avvio della sincronizzazione vengono riaccodate anche le generazioni di schede sospese con origine ancora valida, senza ripetere i segmenti già elaborati. Disattivare solo l'ingest conserva la consultabilità delle schede valide già indicizzate; disattivare le schede ne sospende anche l'uso, fino alla riattivazione. L'abilitazione delle schede non crea un backlog per ticket invariati mai associati a una scheda.
+
+Le impostazioni globali `connector-freshdesk.chat_tools.enabled` e `connector-freshdesk.case_studies.enabled` prevalgono sugli interruttori dell'installazione. Nel pacchetto autonomo le schede restano disabilitate globalmente per default, finché l'host non fornisce un generatore.
+
+La UI salva una modifica parziale attraverso l'API amministrativa di **AskMyDocs**:
+
+```http
+PATCH /api/admin/connectors/42
+Content-Type: application/json
+
+{
+  "settings": {
+    "ingestion": { "enabled": true },
+    "chat_tools": { "enabled": false },
+    "case_studies": { "enabled": true }
+  }
+}
+```
+
+I campi omessi conservano il valore precedente; `false` è una disattivazione esplicita. Questa chiamata aggiorna solo l'installazione locale di AskMyDocs. Tutte le richieste verso Freshdesk continuano a usare esclusivamente **GET**.
 
 Le API REST v2 di Freshdesk richiedono [Basic Auth con API key](https://developers.freshdesk.com/api/#authentication). OAuth per accedere a queste API non è disponibile: [Freshworks lo ha chiarito](https://community.freshworks.dev/t/how-to-use-oauth-authentication-mechanism-for-freshdesk-api/1691). Gli esempi OAuth delle app Marketplace autorizzano servizi esterni, come Google Sheets, e non sostituiscono questa autenticazione. Verifica delle fonti: 8 ottobre 2026.
 
@@ -65,7 +98,7 @@ La sincronizzazione ordinaria e il recupero dello storico usano la stessa pipeli
 
 Entrambe le modalità enumerano gli articoli pubblicati senza applicare la finestra temporale dei ticket.
 
-`FreshdeskConnector::syncFull($installationId)` e `syncIncremental($installationId, $since)` chiamano entrambi `SyncManager::start($installation)` e accodano o riprendono una scansione. Il nome `syncFull` non attiva il recupero dello storico: per quello serve `history: true`. Il parametro `$since` di `syncIncremental` non viene usato; il punto di ripresa e il watermark sono gestiti dai checkpoint persistenti del pacchetto. Se esiste già una scansione ordinaria o storica in coda, in corso o fallita, l'avvio ordinario la riusa e riprende quella fallita.
+`FreshdeskConnector::syncFull($installationId)` e `syncIncremental($installationId, $since)` chiamano entrambi `SyncManager::start($installation)` quando l'ingest è abilitato e accodano o riprendono una scansione. Il nome `syncFull` non attiva il recupero dello storico: per quello serve `history: true`. Il parametro `$since` di `syncIncremental` non viene usato; il punto di ripresa e il watermark sono gestiti dai checkpoint persistenti del pacchetto. Se esiste già una scansione ordinaria o storica in coda, in corso, fallita o sospesa, l'avvio ordinario la riusa e riprende quella fallita o sospesa.
 
 `SyncManager` conserva lo stato nelle tabelle `freshdesk_sync_runs` e `freshdesk_source_states`, isolate per tenant e installazione. `ProcessSyncBatch` lavora a lotti con un lock atomico per installazione. Identificativi remoti, percorsi stabili e impronte dei contenuti evitano di consegnare nuovamente documenti invariati. L'app applica l'upsert dei documenti per percorso durante l'ingestione: anche una ripetizione dopo un arresto tra dispatch e checkpoint conserva l'identità del documento.
 
@@ -151,6 +184,9 @@ Usare una coda asincrona e un cache store con lock atomici, per esempio Redis. L
 
 | Configurazione | Default | Effetto |
 | --- | --- | --- |
+| Installazione: `ingestion.enabled` | `true` | Abilita importazioni ordinarie e storiche; disabilitazione con checkpoint conservati |
+| Installazione: `chat_tools.enabled` | `true` | Abilita i nove strumenti live; indipendente dall'ingest e subordinato al flag globale |
+| Installazione: `case_studies.enabled` | `true` | Generazione e uso delle schede, subordinati al supporto e al flag globale dell'host |
 | Installazione: `date_window_days` | `90` | Periodo ordinario, da 1 a 36500 giorni |
 | Installazione: `include_private_notes` | `true` | Note private nel RAG e nelle conversazioni live |
 | Installazione: `attachments.enabled` | `true` | Scarica allegati compatibili |
@@ -180,7 +216,7 @@ vendor/bin/pint --test
 
 Per sviluppare usando il connector-base già installato nell'app, un `composer.local.json` ignorato può aggiungere un repository `path` verso `AskMyDocsDev/vendor/padosoft/askmydocs-connector-base`, con versione locale `1.6.0`. In quel caso usare `COMPOSER=composer.local.json composer install`.
 
-La suite usa Testbench, SQLite e HTTP simulato. Copre verifica e modifica delle credenziali, isolamento, note private, articoli annidati, download e OCR, limiti, retry, paginazione, ripresa, cancellazioni e assenza di nuove consegne per contenuti invariati. La matrice CI prevede Laravel 12/13 e PHP 8.3/8.4. La validazione effettuata localmente è su Laravel 13 e PHP 8.4; il collaudo con un account reale richiede dominio e API key nel modulo credenziali.
+La suite usa Testbench, SQLite e HTTP simulato. Copre verifica e modifica delle credenziali, isolamento, interruttori per installazione, sospensione e ripresa senza HTTP o generazioni aggiuntive, note private, articoli annidati, download e OCR, limiti, retry, paginazione, ripresa, cancellazioni e assenza di nuove consegne per contenuti invariati. La matrice CI prevede Laravel 12/13 e PHP 8.3/8.4. La validazione effettuata localmente è su Laravel 13 e PHP 8.4; il collaudo con un account reale richiede dominio e API key nel modulo credenziali.
 
 Le illustrazioni sono asset originali. Il README riusa il logo Freshdesk; l'icona dell'interfaccia è un'interpretazione editoriale coerente con gli altri connettori. [Provenienza e diritti del marchio](public/icons/README.md) · [Prompt delle illustrazioni](docs/readme/prompts.md) · [Changelog](CHANGELOG.md).
 

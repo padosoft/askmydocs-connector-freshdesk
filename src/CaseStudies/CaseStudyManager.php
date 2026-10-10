@@ -12,6 +12,7 @@ use Padosoft\AskMyDocsConnectorBase\Contracts\ConnectorIngestionContract;
 use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorFreshdesk\Http\UrlPolicy;
+use Padosoft\AskMyDocsConnectorFreshdesk\Support\Features;
 use Padosoft\AskMyDocsConnectorFreshdesk\Support\Markdown;
 use Padosoft\AskMyDocsConnectorFreshdesk\Sync\SourceState;
 
@@ -26,7 +27,7 @@ final readonly class CaseStudyManager
      */
     public function schedule(ConnectorInstallation $installation, array $ticket, array $conversations, bool $changed): void
     {
-        if (! config('connector-freshdesk.case_studies.enabled', false)) {
+        if (! Features::generateCases($installation)) {
             return;
         }
         $this->assertTenant($installation);
@@ -34,7 +35,8 @@ final readonly class CaseStudyManager
         $source = $this->source($installation, $ticketId);
         $case = $this->cases()->where('installation_id', $installation->id)->where('ticket_id', $ticketId)->first();
         // Do not create case sheets for the existing backlog during an ordinary sync.
-        if ($source === null || (! $changed && $case === null) || (! $changed && in_array($case->status, ['ready', 'cancelled', 'queued', 'running'], true))) {
+        if ($source === null || (! $changed && $case === null)
+            || (! $changed && $case->source_fingerprint === $source->fingerprint && in_array($case->status, ['ready', 'cancelled', 'queued', 'running'], true))) {
             return;
         }
         if ($case === null || $case->source_fingerprint !== $source->fingerprint || $case->status === 'cancelled') {
@@ -59,6 +61,37 @@ final readonly class CaseStudyManager
         } else {
             $case->forceFill(['status' => 'queued', 'error' => null])->save();
         }
+        $this->enqueue($case);
+    }
+
+    /** Resume only already scheduled cases, even when their tickets fall outside the next sync window. */
+    public function resume(ConnectorInstallation $installation): void
+    {
+        $this->assertTenant($installation);
+        if (! Features::generateCases($installation)) {
+            return;
+        }
+        $this->cases()->where('installation_id', $installation->id)->where('status', 'paused')->chunkById(100, function ($cases) use ($installation): void {
+            foreach ($cases as $case) {
+                if (! $this->current($case)) {
+                    continue;
+                }
+                $claimed = $this->cases()->whereKey($case->id)->where('status', 'paused')->where('source_fingerprint', $case->source_fingerprint)
+                    ->update(['status' => 'queued', 'error' => null]);
+                if ($claimed === 0) {
+                    continue;
+                }
+                try {
+                    $this->enqueue($case);
+                } catch (\Throwable) {
+                    $this->ingestion->emitAudit('freshdesk', 'case_study_schedule_failed', $installation->id, ['ticket_id' => $case->ticket_id]);
+                }
+            }
+        });
+    }
+
+    private function enqueue(CaseStudy $case): void
+    {
         try {
             GenerateCaseStudy::dispatch($case->id, $case->tenant_id, $case->source_fingerprint);
         } catch (\Throwable $exception) {
@@ -82,6 +115,11 @@ final readonly class CaseStudyManager
         try {
             $case->refresh();
             if ($case->source_fingerprint !== $fingerprint || in_array($case->status, ['ready', 'cancelled'], true)) {
+                return null;
+            }
+            if (! $this->generationEnabled($case)) {
+                $case->forceFill(['status' => 'paused', 'error' => null])->save();
+
                 return null;
             }
             if (! $this->current($case)) {
@@ -108,15 +146,16 @@ final readonly class CaseStudyManager
                 }
                 $checkpoint['candidates'] = array_merge($checkpoint['candidates'] ?? [], $candidates);
                 $checkpoint['next_segment'] = $next + 1;
-                $this->saveCheckpoint($case, $checkpoint);
 
-                return 1;
+                return $this->saveCheckpoint($case, $checkpoint) ? 1 : null;
             }
             if (! isset($checkpoint['compiled'])) {
                 $result = $generator->compile($input, $checkpoint['candidates'] ?? []);
                 $result->validate($input);
                 $checkpoint['compiled'] = ['fields' => $result->fields, 'usage' => $result->usage];
-                $this->saveCheckpoint($case, $checkpoint);
+                if (! $this->saveCheckpoint($case, $checkpoint)) {
+                    return null;
+                }
             }
             $result = new CaseStudyResult($checkpoint['compiled']['fields'], $checkpoint['compiled']['usage']);
             $result->validate($input);
@@ -124,7 +163,15 @@ final readonly class CaseStudyManager
                 $query = $this->cases()->whereKey($case->id);
                 $query->lockForUpdate();
                 $latest = $query->first();
-                if ($latest === null || $latest->source_fingerprint !== $fingerprint || $latest->status === 'cancelled' || ! $this->current($latest, true)) {
+                if ($latest === null || $latest->source_fingerprint !== $fingerprint || $latest->status === 'cancelled') {
+                    return;
+                }
+                if (! $this->generationEnabled($latest, true)) {
+                    $latest->forceFill(['status' => 'paused', 'error' => null])->save();
+
+                    return;
+                }
+                if (! $this->current($latest, true)) {
                     return;
                 }
                 $latest->forceFill(['status' => 'ready', 'result' => ['fields' => $result->fields, 'usage' => $result->usage], 'error' => null])->save();
@@ -144,12 +191,12 @@ final readonly class CaseStudyManager
     /** Validate tenant, installation policy and parent revision again at indexing and retrieval boundaries. */
     public function current(CaseStudy $case, bool $lock = false): bool
     {
-        if (! config('connector-freshdesk.case_studies.enabled', false) || $case->tenant_id !== $this->tenants->current()) {
+        if ($case->tenant_id !== $this->tenants->current()) {
             return false;
         }
         $query = ConnectorInstallation::query()->where('tenant_id', $case->tenant_id)->whereKey($case->installation_id);
         $installation = ($lock ? $query->lockForUpdate() : $query)->first();
-        if ($installation === null || $installation->connector_name !== 'freshdesk' || ! in_array($installation->status, ['active', 'errored'], true)
+        if ($installation === null || ! Features::caseStudies($installation) || $installation->connector_name !== 'freshdesk' || ! in_array($installation->status, ['active', 'errored'], true)
             || $case->private_notes_included !== (bool) data_get($installation->config_json, 'include_private_notes', true)) {
             return false;
         }
@@ -194,10 +241,21 @@ final readonly class CaseStudyManager
     }
 
     /** @param array<string,mixed> $checkpoint */
-    private function saveCheckpoint(CaseStudy $case, array $checkpoint): void
+    private function saveCheckpoint(CaseStudy $case, array $checkpoint): bool
     {
-        $this->cases()->whereKey($case->id)->where('source_fingerprint', $case->source_fingerprint)->where('status', 'running')
-            ->update(['status' => 'queued', 'checkpoint' => json_encode($checkpoint, JSON_THROW_ON_ERROR)]);
+        $enabled = $this->generationEnabled($case);
+        $saved = $this->cases()->whereKey($case->id)->where('source_fingerprint', $case->source_fingerprint)->where('status', 'running')
+            ->update(['status' => $enabled ? 'queued' : 'paused', 'checkpoint' => json_encode($checkpoint, JSON_THROW_ON_ERROR)]);
+
+        return $enabled && $saved > 0;
+    }
+
+    private function generationEnabled(CaseStudy $case, bool $lock = false): bool
+    {
+        $query = ConnectorInstallation::query()->where('tenant_id', $case->tenant_id)->where('connector_name', 'freshdesk')->whereKey($case->installation_id);
+        $installation = ($lock ? $query->lockForUpdate() : $query)->first();
+
+        return $installation !== null && Features::generateCases($installation);
     }
 
     private function publish(CaseStudy $case, CaseStudyInput $input, CaseStudyResult $result): void

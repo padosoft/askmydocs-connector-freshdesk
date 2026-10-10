@@ -12,6 +12,7 @@ use Padosoft\AskMyDocsConnectorBase\Support\Metadata\SourceAwareMetadataBuilder;
 use Padosoft\AskMyDocsConnectorFreshdesk\CaseStudies\CaseStudyManager;
 use Padosoft\AskMyDocsConnectorFreshdesk\Http\FreshdeskClient;
 use Padosoft\AskMyDocsConnectorFreshdesk\Http\UrlPolicy;
+use Padosoft\AskMyDocsConnectorFreshdesk\Support\Features;
 use Padosoft\AskMyDocsConnectorFreshdesk\Support\Markdown;
 
 final readonly class DocumentImporter
@@ -23,6 +24,7 @@ final readonly class DocumentImporter
      */
     public function ticket(ConnectorInstallation $installation, SyncRun $run, FreshdeskClient $client, array $ticket): void
     {
+        Features::assertIngestion($installation->refresh());
         $private = (bool) data_get($installation->config_json, 'include_private_notes', true);
         $conversations = [];
         for ($page = 1; $page <= 300; $page++) {
@@ -156,6 +158,7 @@ final readonly class DocumentImporter
      */
     private function write(ConnectorInstallation $installation, SyncRun $run, string $kind, string $id, string $title, string $body, string $mime, ?string $parent, array $fields, string $extension = 'md'): bool
     {
+        Features::assertIngestion($installation->refresh());
         if (preg_match('/^[1-9][0-9]*$/D', $id) !== 1) {
             throw new \RuntimeException('Freshdesk returned an invalid remote identifier.');
         }
@@ -199,6 +202,7 @@ final readonly class DocumentImporter
 
     public function delete(ConnectorInstallation $installation, SyncRun $run, string $kind, string $id): void
     {
+        Features::assertIngestion($installation->refresh());
         if ($kind === 'ticket') {
             app(CaseStudyManager::class)->cancel($installation, $id);
         }
@@ -214,6 +218,7 @@ final readonly class DocumentImporter
 
     private function remove(ConnectorInstallation $installation, SyncRun $run, SourceState $state): void
     {
+        Features::assertIngestion($installation->refresh());
         $this->ingestion->softDeleteByRemoteId($installation, 'freshdesk_remote_id', $installation->id.':'.$state->kind.':'.$state->remote_id);
         $state->delete();
         $counts = $run->counts;

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Interruttori per installazione `ingestion.enabled`, `chat_tools.enabled` e `case_studies.enabled`, esposti nello schema delle impostazioni per la UI AskMyDocs; flag globali dell'host ancora prioritari.
+- Disattivazione dell'ingest con blocco degli avvii e delle richieste successive, sospensione dei lotti e ripresa dal checkpoint; live indipendente dall'ingest, con catalogo ed esecuzione aggiornati alle preferenze correnti.
+- Sospensione e ripresa delle generazioni di schede senza ripetere i segmenti completati; blocco delle schede disabilitate all'indicizzazione e alla consultazione, conservando i documenti locali.
+- Integrazione UI AskMyDocs: modifica per connessione, esclusione da Sync all, blocco dell'import storico e stato `paused` riprendibile.
 - Schede problema → causa → intervento → esito per ticket nuovi o modificati, come documenti locali separati collegati alle citazioni originali; nessuna generazione automatica per il backlog invariato.
 - Contratto di generazione fornito dall'host, snapshot redatti, controlli letterali delle evidenze e checkpoint per riprendere i job; invalidazione per revisioni e policy cambiate e cancellazioni confermate.
 - Integrazione AskMyDocsDev con OpenRouter/Jev, chunk unitario della scheda, provenienza automatica e recupero delle citazioni originali per motivare le risposte.

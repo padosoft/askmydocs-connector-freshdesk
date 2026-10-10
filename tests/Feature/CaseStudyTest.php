@@ -16,6 +16,7 @@ use Padosoft\AskMyDocsConnectorFreshdesk\CaseStudies\GenerateCaseStudy;
 use Padosoft\AskMyDocsConnectorFreshdesk\Http\FreshdeskClient;
 use Padosoft\AskMyDocsConnectorFreshdesk\Sync\DocumentImporter;
 use Padosoft\AskMyDocsConnectorFreshdesk\Sync\SourceState;
+use Padosoft\AskMyDocsConnectorFreshdesk\Sync\SyncManager;
 use Padosoft\AskMyDocsConnectorFreshdesk\Sync\SyncRun;
 use Padosoft\AskMyDocsConnectorFreshdesk\Tests\TestCase;
 
@@ -211,5 +212,87 @@ final class CaseStudyTest extends TestCase
             $this->assertTrue(mb_check_encoding($part, 'UTF-8'));
             $this->assertLessThanOrEqual(10000, strlen($part));
         }
+    }
+
+    public function test_account_can_disable_case_sheets_while_raw_ingestion_continues(): void
+    {
+        $this->import(['case_studies' => ['enabled' => false]]);
+        $this->assertSame(0, CaseStudy::count());
+        $this->assertCount(1, $this->ingestion->documents);
+        Queue::assertNotPushed(GenerateCaseStudy::class);
+    }
+
+    public function test_case_deactivation_pauses_paid_work_and_resumes_without_repeating_segments(): void
+    {
+        [$installation, , , $case] = $this->import();
+        $generator = Mockery::mock(CaseStudyGeneratorContract::class);
+        $generator->shouldReceive('extract')->once()->andReturn([]);
+        $this->app->instance(CaseStudyGeneratorContract::class, $generator);
+        app(CaseStudyManager::class)->batch($case->id, $case->source_fingerprint);
+        $checkpoint = $case->fresh()->checkpoint;
+        $installation->update(['config_json' => array_replace_recursive($installation->config_json, ['case_studies' => ['enabled' => false]])]);
+        $this->assertNull(app(CaseStudyManager::class)->batch($case->id, $case->source_fingerprint));
+        $this->assertSame('paused', $case->fresh()->status);
+        $this->assertSame($checkpoint, $case->fresh()->checkpoint);
+        $installation->update(['config_json' => array_replace_recursive($installation->config_json, ['case_studies' => ['enabled' => true]])]);
+        app(CaseStudyManager::class)->resume($installation);
+        app(CaseStudyManager::class)->resume($installation);
+        Queue::assertPushed(GenerateCaseStudy::class, 2);
+        $resumed = $this->generator();
+        $resumed->shouldNotReceive('extract')->withArgs(fn ($input, $sources) => $sources[0]['key'] === 'description');
+        $this->drain($case);
+        $this->assertSame('ready', $case->fresh()->status);
+    }
+
+    public function test_case_switch_blocks_and_restores_existing_sheets_without_deleting_them(): void
+    {
+        [$installation, , , $case] = $this->import();
+        $this->generator();
+        $this->drain($case);
+        $metadata = $this->ingestion->documents[1]['metadata'];
+        $installation->update(['config_json' => array_replace_recursive($installation->config_json, ['ingestion' => ['enabled' => false]])]);
+        $this->assertNotNull(app(CaseStudyManager::class)->validMetadata($metadata));
+        $installation->update(['config_json' => array_replace_recursive($installation->config_json, ['case_studies' => ['enabled' => false]])]);
+        $this->assertNull(app(CaseStudyManager::class)->validMetadata($metadata));
+        $this->assertSame('ready', $case->fresh()->status);
+        $this->assertSame(2, SourceState::count());
+        $installation->update(['config_json' => array_replace_recursive($installation->config_json, ['case_studies' => ['enabled' => true]])]);
+        $this->assertNotNull(app(CaseStudyManager::class)->validMetadata($metadata));
+    }
+
+    public function test_disabling_ingestion_during_extraction_keeps_the_completed_segment_and_pauses(): void
+    {
+        [$installation, , , $case] = $this->import();
+        $generator = Mockery::mock(CaseStudyGeneratorContract::class);
+        $generator->shouldReceive('extract')->once()->andReturnUsing(function () use ($installation) {
+            $installation->update(['config_json' => array_replace_recursive($installation->config_json, ['ingestion' => ['enabled' => false]])]);
+
+            return [];
+        });
+        $this->app->instance(CaseStudyGeneratorContract::class, $generator);
+        $this->assertNull(app(CaseStudyManager::class)->batch($case->id, $case->source_fingerprint));
+        $this->assertSame('paused', $case->fresh()->status);
+        $this->assertSame(1, $case->fresh()->checkpoint['next_segment']);
+        $this->assertCount(1, $this->ingestion->documents);
+        $installation->update(['config_json' => array_replace_recursive($installation->config_json, ['ingestion' => ['enabled' => true]])]);
+        app(SyncManager::class)->start($installation);
+        $this->assertSame('queued', $case->fresh()->status);
+        Queue::assertPushed(GenerateCaseStudy::class, 2);
+        Http::assertSentCount(1);
+    }
+
+    public function test_case_changed_while_disabled_is_regenerated_from_the_current_original(): void
+    {
+        [$installation, $run, $ticket, $case] = $this->import();
+        $this->generator();
+        $this->drain($case);
+        $installation->update(['config_json' => array_replace_recursive($installation->config_json, ['case_studies' => ['enabled' => false]])]);
+        $ticket['description_text'] = 'Descrizione aggiornata e documentata.';
+        app(DocumentImporter::class)->ticket($installation, $run, new FreshdeskClient('example.freshdesk.com', 'test-key'), $ticket);
+        $installation->update(['config_json' => array_replace_recursive($installation->config_json, ['case_studies' => ['enabled' => true]])]);
+        app(DocumentImporter::class)->ticket($installation, $run, new FreshdeskClient('example.freshdesk.com', 'test-key'), $ticket);
+        $this->assertSame('queued', $case->fresh()->status);
+        $this->assertSame($ticket['description_text'], $case->fresh()->snapshot['sources'][0]['text']);
+        Queue::assertPushed(GenerateCaseStudy::class, 2);
     }
 }

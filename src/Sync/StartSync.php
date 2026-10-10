@@ -8,6 +8,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
+use Padosoft\AskMyDocsConnectorFreshdesk\Support\Features;
 
 /** Entry point for schedulers: scheduling is separate from import completion. */
 final class StartSync implements ShouldQueue
@@ -30,7 +31,7 @@ final class StartSync implements ShouldQueue
         $tenants->set($this->tenantId);
         try {
             $installation = $manager->installation($this->installationId);
-            if ($installation->status === 'active') {
+            if ($installation->status === 'active' && Features::ingestion($installation)) {
                 $manager->start($installation);
             }
         } finally {

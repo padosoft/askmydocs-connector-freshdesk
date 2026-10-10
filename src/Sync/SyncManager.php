@@ -13,8 +13,11 @@ use Padosoft\AskMyDocsConnectorBase\Auth\OAuthCredentialVault;
 use Padosoft\AskMyDocsConnectorBase\Contracts\ConnectorIngestionContract;
 use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
+use Padosoft\AskMyDocsConnectorFreshdesk\CaseStudies\CaseStudyManager;
 use Padosoft\AskMyDocsConnectorFreshdesk\Exceptions\FreshdeskApiException;
+use Padosoft\AskMyDocsConnectorFreshdesk\Exceptions\IngestionDisabled;
 use Padosoft\AskMyDocsConnectorFreshdesk\Http\FreshdeskClient;
+use Padosoft\AskMyDocsConnectorFreshdesk\Support\Features;
 
 final readonly class SyncManager
 {
@@ -41,6 +44,7 @@ final readonly class SyncManager
     public function start(ConnectorInstallation $installation, bool $history = false): SyncRun
     {
         $installation = $this->installation($installation->id);
+        Features::assertIngestion($installation);
         if (! in_array($installation->status, ['active', 'errored'], true)) {
             throw new \RuntimeException('Enable the Freshdesk installation before importing.');
         }
@@ -52,11 +56,11 @@ final readonly class SyncManager
         $run = DB::transaction(function () use ($installation, $mode, $history, &$dispatch): SyncRun {
             ConnectorInstallation::query()->whereKey($installation->id)->where('tenant_id', $installation->tenant_id)->lockForUpdate()->firstOrFail();
             $query = $this->runs($installation);
-            $query->whereIn('status', ['queued', 'running', 'failed']);
+            $query->whereIn('status', ['queued', 'running', 'failed', 'paused']);
             $query->latest('id');
             $existing = $query->get()->first(fn ($candidate) => ! $history || $candidate->mode === 'history');
             if ($existing !== null) {
-                if ($existing->status === 'failed') {
+                if (in_array($existing->status, ['failed', 'paused'], true)) {
                     $existing->forceFill(['status' => 'queued', 'error' => null])->save();
                     $dispatch = true;
                 }
@@ -87,6 +91,7 @@ final readonly class SyncManager
         if ($dispatch) {
             ProcessSyncBatch::dispatch($run->id, $installation->tenant_id);
         }
+        app(CaseStudyManager::class)->resume($installation);
 
         return $run;
     }
@@ -100,7 +105,7 @@ final readonly class SyncManager
 
     public function cancel(ConnectorInstallation $installation): void
     {
-        $this->runs($this->installation($installation->id))->whereIn('status', ['queued', 'running', 'failed'])->update(['status' => 'cancelled']);
+        $this->runs($this->installation($installation->id))->whereIn('status', ['queued', 'running', 'failed', 'paused'])->update(['status' => 'cancelled']);
     }
 
     /** Returns seconds before the next batch; null means finished. */
@@ -122,8 +127,9 @@ final readonly class SyncManager
 
                 return null;
             }
+            Features::assertIngestion($installation);
             $run->forceFill(['status' => 'running', 'error' => null])->save();
-            $client = $this->client($installation);
+            $client = $this->client($installation, static fn () => Features::assertIngestion($installation->refresh()));
             $started = microtime(true);
             $items = max(1, min(100, (int) config('connector-freshdesk.sync.batch_items', 5)));
             for ($i = 0; $i < $items && microtime(true) - $started < (int) config('connector-freshdesk.sync.batch_seconds', 60); $i++) {
@@ -132,6 +138,7 @@ final readonly class SyncManager
 
                     return null;
                 }
+                Features::assertIngestion($installation->refresh());
                 if ($this->step($installation, $run, $client)) {
                     $run->forceFill(['status' => 'completed', 'finished_at' => now(), 'error' => null])->save();
                     $lastSync = $installation->fresh()->last_sync_at;
@@ -149,6 +156,10 @@ final readonly class SyncManager
             $run->forceFill(['status' => 'queued'])->save();
 
             return 1;
+        } catch (IngestionDisabled) {
+            $run->forceFill(['status' => 'paused', 'error' => null])->save();
+
+            return null;
         } catch (FreshdeskApiException $exception) {
             $run->forceFill(['status' => $exception->status === 429 ? 'queued' : 'failed', 'error' => $exception->getMessage()])->save();
             if ($exception->status === 429) {
