@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Schede problema → causa → intervento → esito per ticket nuovi o modificati, come documenti locali separati collegati alle citazioni originali; nessuna generazione automatica per il backlog invariato.
+- Contratto di generazione fornito dall'host, snapshot redatti, controlli letterali delle evidenze e checkpoint per riprendere i job; invalidazione per revisioni e policy cambiate e cancellazioni confermate.
+- Integrazione AskMyDocsDev con OpenRouter/Jev, chunk unitario della scheda, provenienza automatica e recupero delle citazioni originali per motivare le risposte.
+- Blocco del trasporto HTTP per qualsiasi metodo diverso da GET: ingest, strumenti live, verifica credenziali e download restano di sola lettura verso Freshdesk.
+
 - Profilo d’uso JSON versione 1, scoperto tramite `extra.askmydocs.agent_usage`, con routing live/indice/combinato, workflow e regole di dominio per l’orchestratore.
 - Regole Freshdesk trasferite dal planner host al pacchetto: identità, richiedenti e assegnatari, storico, paginazione, fallimenti e aggiornamento dei dati.
 

@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Model;
  * @property ?string $parent_id
  * @property string $fingerprint
  * @property string $relative_path
+ * @property int|null $last_seen_run_id
  */
 final class SourceState extends Model
 {

@@ -77,6 +77,20 @@ I ticket non vengono rimossi quando escono dalla finestra. Una cancellazione vie
 
 Freshdesk non enumera globalmente i ticket archiviati accessibili soltanto con un ID noto: **Prendi tutto** copre lo storico scopribile dalle API, non un export completo dell'account. Documentazione di riferimento: [API REST v2 Freshdesk](https://developers.freshdesk.com/api/).
 
+## Schede dei casi per la ricerca di problemi simili
+
+Un host che implementa `CaseStudies\CaseStudyGeneratorContract` può abilitare `connector-freshdesk.case_studies.enabled`. AskMyDocsDev fornisce l'adattatore OpenRouter e abilita la funzione per default; `CONNECTOR_FRESHDESK_CASE_STUDIES_ENABLED=false` la disabilita. Nel pacchetto autonomo il default è `false`. `CONNECTOR_FRESHDESK_CASE_STUDIES_MODEL` permette di scegliere il modello di sintesi; l'host usa altrimenti il proprio modello per il preprocessore delle domande.
+
+Dopo l'importazione di un ticket **nuovo o modificato**, `GenerateCaseStudy` produce un documento separato con **problema → causa → intervento → esito**. Ogni campo contiene una sintesi breve e citazioni letterali della descrizione o delle conversazioni, con ID e data della conversazione e collegamento al ticket originale. La redazione dei dati personali e l'esclusione delle note private avvengono prima di inviare il testo al generatore. Gli allegati rimangono documenti separati e non sono usati per compilare questa prima versione della scheda.
+
+L'host verifica con Jev tramite OpenRouter prima i fatti nel contesto originale dei segmenti letti, poi il supporto e i conflitti della sintesi finale. Il pacchetto verifica identificativi e appartenenza letterale delle citazioni allo snapshot. Una causa ipotizzata, un intervento soltanto suggerito o lo stato “chiuso” non bastano a documentare rispettivamente causa, intervento o successo. I campi senza supporto sufficiente diventano **non documentato**; conflitti irrisolti diventano **informazioni contrastanti**. La verifica semantica è probabilistica e riusa la soglia configurata nell'host: va valutata sui casi reali, non garantisce l'assenza di errori del modello.
+
+L'estrazione attraversa tutte le conversazioni ammesse, a segmenti UTF-8 completi di massimo 10.000 byte. La sintesi e la verifica ricevono i fatti estratti; se superano il budget di verifica dell'host, la generazione fallisce esplicitamente senza scartare evidenze. I checkpoint nella tabella `freshdesk_case_studies` permettono di riprendere le estrazioni completate dopo errori; l'importazione del ticket originale prosegue indipendentemente. `ready` indica che la scheda è stata generata e consegnata alla pipeline, non che l'indicizzazione sia già terminata.
+
+Nell'indice AskMyDocs, la scheda ha tipo `freshdesk_case_study` e provenienza automatica. I quattro campi restano in un unico chunk entro il limite della pipeline; le citazioni hanno chunk separati. La domanda “come abbiamo risolto problemi simili?” usa la normale ricerca semantica della KB anche sulle schede: sintomi, causa e intervento sono vicini nello stesso testo indicizzato. Il lettore delle fonti usa le citazioni originali verificate come evidenza per rispondere. Le schede obsolete sono bloccate all'indicizzazione e alla consultazione quando cambia la revisione del ticket, il progetto, il dominio, la policy delle note private o lo stato dell'installazione; una cancellazione confermata annulla anche i job pendenti.
+
+Abilitare questa funzione **non genera automaticamente schede per il backlog già importato e invariato**, neppure con una nuova scansione storica. Le schede vengono create per ticket che entrano nell'ingest per la prima volta o cambiano; una generazione fallita già registrata può riprendere alla successiva lettura del ticket. Applicare la migrazione del pacchetto e usare il worker della coda `freshdesk` descritto sotto. Il catalogo live resta composto dagli stessi **nove strumenti**.
+
 ## Contratto d'uso per l'orchestratore
 
 Il manifest Composer dichiara `extra.askmydocs.agent_usage.freshdesk`, che indica
@@ -146,8 +160,12 @@ Usare una coda asincrona e un cache store con lock atomici, per esempio Redis. L
 | Pacchetto: `http.attempts` | `3` | Tentativi per problemi di connessione e risposte 5xx |
 | Pacchetto: `sync.batch_items` / `batch_seconds` | `5` / `60` | Passaggi e durata indicativa del lotto; il singolo ticket può durare di più |
 | Pacchetto: `chat_tools.max_result_bytes` | `65536` | Dimensione massima della risposta live |
+| Pacchetto: `case_studies.enabled` | `false` (AskMyDocsDev: `true`) | Schede per ticket nuovi/modificati; richiede l'adattatore dell'host |
+| Pacchetto: `case_studies.model` | `null` | Modello OpenRouter scelto dall'host se non specificato |
 
 I `401` e `403` vengono riportati senza ripetere la richiesta. I `429` mantengono il checkpoint e rinviano il lotto per i secondi indicati da `Retry-After`; nella chat vengono restituiti come errore, senza attesa bloccante. Gli errori omettono corpi upstream e credenziali.
+
+Tutte le richieste verso Freshdesk usano **GET**; il trasporto rifiuta metodi di scrittura. La generazione delle schede scrive soltanto nello storage e nel database dell’host e usa OpenRouter per l’AI, senza passare credenziali Freshdesk al generatore.
 
 I domini devono essere HTTPS `*.freshdesk.com`, senza porte personalizzate o credenziali nell'URL. I download passano da un'allowlist di host, controlli DNS su indirizzi pubblici e pinning dell'indirizzo; ogni redirect viene rivalidato. La API key non viene inoltrata agli allegati, neppure sul dominio dell'account. Gli URL firmati non sono conservati nei metadati. Modificare `attachments.allowed_hosts` soltanto per CDN effettivamente usati dal proprio account; `http.resolve_dns=false` è riservato ai test simulati.
 
