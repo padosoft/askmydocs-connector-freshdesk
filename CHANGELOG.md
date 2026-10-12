@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Data iniziale facoltativa `history.start_date` per scaricare e importare i ticket aggiornati da una data in poi, esposta come campo data nelle impostazioni della connessione; valore vuoto mantiene il recupero completo.
+- Validazione del calendario e dei limiti dal 1970 fino a oggi (UTC); `updated_since` conservato nel checkpoint e nello stato dell'azione, con ripresa dal periodo originale anche dopo modifiche alle impostazioni.
+- Import storici recenti non spostano la sincronizzazione ordinaria oltre il periodo effettivamente coperto. Conversazioni e allegati seguono i ticket selezionati; articoli pubblicati senza filtro temporale. Trasporto Freshdesk sempre GET-only.
 - Interruttori per installazione `ingestion.enabled`, `chat_tools.enabled` e `case_studies.enabled`, esposti nello schema delle impostazioni per la UI AskMyDocs; flag globali dell'host ancora prioritari.
 - Disattivazione dell'ingest con blocco degli avvii e delle richieste successive, sospensione dei lotti e ripresa dal checkpoint; live indipendente dall'ingest, con catalogo ed esecuzione aggiornati alle preferenze correnti.
 - Sospensione e ripresa delle generazioni di schede senza ripetere i segmenti completati; blocco delle schede disabilitate all'indicizzazione e alla consultazione, conservando i documenti locali.

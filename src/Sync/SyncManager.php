@@ -16,6 +16,7 @@ use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorFreshdesk\CaseStudies\CaseStudyManager;
 use Padosoft\AskMyDocsConnectorFreshdesk\Exceptions\FreshdeskApiException;
 use Padosoft\AskMyDocsConnectorFreshdesk\Exceptions\IngestionDisabled;
+use Padosoft\AskMyDocsConnectorFreshdesk\Exceptions\InvalidHistoryStartDate;
 use Padosoft\AskMyDocsConnectorFreshdesk\Http\FreshdeskClient;
 use Padosoft\AskMyDocsConnectorFreshdesk\Support\Features;
 
@@ -68,7 +69,12 @@ final readonly class SyncManager
                 return $existing;
             }
             $window = max(1, min(36500, (int) data_get($installation->config_json, 'date_window_days', 90)));
-            $since = $history ? Carbon::create(1970, 1, 1, 0, 0, 0, 'UTC') : Carbon::now('UTC')->subDays($window);
+            $scanStarted = Carbon::now('UTC');
+            $since = $history ? $this->historySince($installation) : $scanStarted->copy()->subDays($window);
+            // A recent historical import must not skip older tickets in the ordinary window.
+            $coverageDays = $history
+                ? (data_get($installation->config_json, 'history.start_date') ? (int) $since->diffInDays($scanStarted) : 36500)
+                : $window;
             $previous = $this->runs($installation)->where('status', 'completed')->latest('scan_started_at')->first();
             $projection = hash('sha256', json_encode([
                 'private' => data_get($installation->config_json, 'include_private_notes', true),
@@ -84,8 +90,8 @@ final readonly class SyncManager
 
             return SyncRun::query()->create([
                 'tenant_id' => $installation->tenant_id, 'installation_id' => $installation->id, 'mode' => $mode,
-                'status' => 'queued', 'scan_started_at' => now(), 'counts' => [],
-                'checkpoint' => ['phase' => 'tickets', 'since' => $since->toIso8601ZuluString(), 'initial_since' => $since->toIso8601ZuluString(), 'page' => 1, 'pending' => [], 'window_days' => $history ? 36500 : $window, 'projection_hash' => $projection, 'refresh_tickets' => $refresh, 'refresh_cursor' => 0],
+                'status' => 'queued', 'scan_started_at' => $scanStarted, 'counts' => [],
+                'checkpoint' => ['phase' => 'tickets', 'since' => $since->toIso8601ZuluString(), 'initial_since' => $since->toIso8601ZuluString(), 'page' => 1, 'pending' => [], 'window_days' => $coverageDays, 'projection_hash' => $projection, 'refresh_tickets' => $refresh, 'refresh_cursor' => 0],
             ]);
         });
         if ($dispatch) {
@@ -94,6 +100,24 @@ final readonly class SyncManager
         app(CaseStudyManager::class)->resume($installation);
 
         return $run;
+    }
+
+    private function historySince(ConnectorInstallation $installation): Carbon
+    {
+        $date = data_get($installation->config_json, 'history.start_date');
+        if ($date === null || $date === '') {
+            return Carbon::create(1970, 1, 1, 0, 0, 0, 'UTC');
+        }
+        try {
+            $since = is_string($date) ? Carbon::createFromFormat('!Y-m-d', $date, 'UTC') : null;
+        } catch (\Throwable) {
+            $since = null;
+        }
+        if ($since === null || $since->format('Y-m-d') !== $date || $date < '1970-01-01' || $since->greaterThan(Carbon::now('UTC')->startOfDay())) {
+            throw new InvalidHistoryStartDate('Choose a valid historical import start date in YYYY-MM-DD format, between 1970-01-01 and today (UTC).');
+        }
+
+        return $since;
     }
 
     public function latest(ConnectorInstallation $installation): ?SyncRun
@@ -233,7 +257,7 @@ final readonly class SyncManager
                 $next = $phase === 'tickets'
                     ? ['phase' => 'deleted', 'since' => $run->checkpoint['initial_since'] ?? $run->checkpoint['since'], 'page' => 1, 'pending' => [], 'window_days' => $cp['window_days']]
                     : ['phase' => 'categories', 'categories' => [], 'page' => 1, 'window_days' => $cp['window_days']];
-                $cp = $next + ['projection_hash' => $cp['projection_hash'] ?? null];
+                $cp = $next + ['projection_hash' => $cp['projection_hash'] ?? null, 'initial_since' => $cp['initial_since'] ?? null];
                 $run->checkpoint = $cp;
 
                 return false;

@@ -37,6 +37,6 @@ final class SyncRun extends Model
      */
     public function summary(): array
     {
-        return ['id' => $this->id, 'mode' => $this->mode, 'status' => $this->status, 'counts' => $this->counts, 'error' => $this->error, 'phase' => $this->checkpoint['phase'] ?? null];
+        return ['id' => $this->id, 'mode' => $this->mode, 'status' => $this->status, 'counts' => $this->counts, 'error' => $this->error, 'phase' => $this->checkpoint['phase'] ?? null, 'updated_since' => $this->checkpoint['initial_since'] ?? null];
     }
 }

@@ -94,9 +94,24 @@ La sincronizzazione ordinaria e il recupero dello storico usano la stessa pipeli
 | Modalità | Avvio | Periodo dei ticket |
 | --- | --- | --- |
 | Ordinaria (`window`) | `SyncManager::start($installation)` | Alla prima scansione usa `date_window_days`, con default di 90 giorni. Le scansioni successive usano il watermark dell'ultima scansione completata entro questa finestra; ampliarla permette di recuperare anche il periodo aggiunto. |
-| Storico (`history`, **Prendi tutto**) | `SyncManager::start($installation, history: true)` | Recupera i ticket enumerabili dalle API dal `1970-01-01T00:00:00Z` fino all'avvio della scansione, indipendentemente dalla finestra ordinaria. |
+| Storico (`history`, **Prendi tutto** / **Importa storico dalla data**) | `SyncManager::start($installation, history: true)` | Recupera i ticket aggiornati a partire da `history.start_date` (mezzanotte UTC), fino all'avvio della scansione. Se la data è vuota, parte dal `1970-01-01T00:00:00Z`. La finestra ordinaria resta indipendente. |
 
 Entrambe le modalità enumerano gli articoli pubblicati senza applicare la finestra temporale dei ticket.
+
+Per scaricare e fare l'ingest dello storico da una data, aprire **Edit → Sync settings → Historical import**, scegliere **Historical import start date (UTC)**, salvare e riaprire le impostazioni per premere **Importa storico dalla data**. Il campo è facoltativo e accetta una data valida in formato `YYYY-MM-DD`, dal 1970 fino a oggi (UTC). Cancellarlo ripristina **Prendi tutto** per i nuovi import.
+
+La data viene inviata a Freshdesk come `updated_since`: seleziona i ticket in base all'ultimo aggiornamento, non alla creazione. Un ticket creato prima della data ma aggiornato dopo può quindi essere incluso. Per ogni ticket selezionato vengono importate le conversazioni ammesse dalla policy e gli allegati compatibili, anche se precedenti alla data. Il filtro non si applica agli articoli pubblicati né elimina i documenti già presenti nella KB. Tutte le richieste verso Freshdesk restano GET.
+
+La stessa impostazione può essere salvata tramite l'API **locale di AskMyDocs**:
+
+```http
+PATCH /api/admin/connectors/{installationId}
+Content-Type: application/json
+
+{"settings":{"history":{"start_date":"2024-01-01"}}}
+```
+
+Avviare poi `POST /api/admin/connectors/{installationId}/actions/historical-import`. Per tornare allo storico completo, inviare `start_date: null`. Questi salvataggi e avvii sono interni ad AskMyDocs: non effettuano scritture su Freshdesk.
 
 `FreshdeskConnector::syncFull($installationId)` e `syncIncremental($installationId, $since)` chiamano entrambi `SyncManager::start($installation)` quando l'ingest è abilitato e accodano o riprendono una scansione. Il nome `syncFull` non attiva il recupero dello storico: per quello serve `history: true`. Il parametro `$since` di `syncIncremental` non viene usato; il punto di ripresa e il watermark sono gestiti dai checkpoint persistenti del pacchetto. Se esiste già una scansione ordinaria o storica in coda, in corso, fallita o sospesa, l'avvio ordinario la riusa e riprende quella fallita o sospesa.
 
@@ -104,7 +119,7 @@ Entrambe le modalità enumerano gli articoli pubblicati senza applicare la fines
 
 Il checkpoint salva fase, pagina e ticket o articoli ancora da elaborare. Il watermark temporale viene consolidato dopo il completamento dell'intera scansione, prendendo l'ora d'inizio come limite superiore dei ticket. Le sincronizzazioni ordinarie successive sovrappongono 120 secondi al watermark completato entro la finestra configurata. Al limite delle 300 pagine, una scansione ordinata per `updated_at` riparte dall'ultimo timestamp meno un secondo; se non riesce ad avanzare, mostra un errore e resta incompleta.
 
-**Prendi tutto** è un recupero storico una tantum: conserva `date_window_days`, quindi le sincronizzazioni ordinarie successive mantengono la finestra configurata. Una seconda richiesta durante un recupero storico già in coda o in corso restituisce la stessa scansione; un recupero fallito riprende dal suo checkpoint. Il registro generico delle azioni dell'app espone stato, conteggi ed errore; i conteggi riguardano i documenti consegnati alla pipeline, che completa estrazione e indicizzazione in coda.
+L'importazione storica è un recupero una tantum: conserva `date_window_days`, quindi le sincronizzazioni ordinarie successive mantengono la finestra configurata, senza saltare ticket precedenti a un import storico più recente. Una seconda richiesta durante un recupero storico già in coda o in corso restituisce la stessa scansione; un recupero fallito o sospeso riprende dal proprio checkpoint e dalla propria data originale. Modificare o cancellare `history.start_date` vale per il prossimo nuovo import, dopo il completamento o l'annullamento di quello esistente. Il registro generico delle azioni dell'app espone stato, conteggi, errore e `updated_since`, conservato anche dopo il completamento; i conteggi riguardano i documenti consegnati alla pipeline, che completa estrazione e indicizzazione in coda.
 
 I ticket non vengono rimossi quando escono dalla finestra. Una cancellazione viene applicata quando il filtro Freshdesk `deleted` la conferma. Per un articolo scomparso dall'elenco viene richiesto il dettaglio: `404` conferma la rimozione; un articolo passato a bozza viene rimosso. Un `404` di ticket non basta, perché può trattarsi di un ticket archiviato. Disattivare le note private provoca, alla sincronizzazione successiva, anche l'aggiornamento dei ticket storici già importati.
 
