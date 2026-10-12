@@ -37,11 +37,12 @@ final class FreshdeskTest extends TestCase
     {
         Http::swap(new Factory);
         Http::preventStrayRequests();
-        Http::fake(function ($request) use ($attachments) {
+        $updatedAt = now()->subDay()->toIso8601ZuluString();
+        Http::fake(function ($request) use ($attachments, $updatedAt) {
             $path = parse_url($request->url(), PHP_URL_PATH);
             $rows = match ($path) {
-                '/api/v2/tickets' => ($request['filter'] ?? null) === 'deleted' ? [] : [['id' => 1, 'updated_at' => now()->subDay()->toIso8601ZuluString()]],
-                '/api/v2/tickets/1' => ['id' => 1, 'subject' => 'Help', 'description_text' => 'sensitive@example.com initial issue', 'updated_at' => now()->subDay()->toIso8601ZuluString(), 'attachments' => $attachments ? [['id' => 8, 'name' => 'info.txt', 'content_type' => 'text/plain', 'file_size' => 5, 'attachment_url' => 'https://cdn.freshdesk.com/file?signature=secret']] : []],
+                '/api/v2/tickets' => ($request['filter'] ?? null) === 'deleted' ? [] : [['id' => 1, 'updated_at' => $updatedAt]],
+                '/api/v2/tickets/1' => ['id' => 1, 'subject' => 'Help', 'description_text' => 'sensitive@example.com initial issue', 'updated_at' => $updatedAt, 'attachments' => $attachments ? [['id' => 8, 'name' => 'info.txt', 'content_type' => 'text/plain', 'file_size' => 5, 'attachment_url' => 'https://cdn.freshdesk.com/file?signature=secret']] : []],
                 '/api/v2/tickets/1/conversations' => [['id' => 11, 'private' => false, 'body_text' => 'Public reply'], ['id' => 12, 'private' => true, 'body_text' => 'Private note']],
                 '/api/v2/solutions/categories' => [['id' => 2]],
                 '/api/v2/solutions/categories/2/folders' => [['id' => 3]],
