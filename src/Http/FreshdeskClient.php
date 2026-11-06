@@ -5,10 +5,14 @@ declare(strict_types=1);
 namespace Padosoft\AskMyDocsConnectorFreshdesk\Http;
 
 use Closure;
+use GuzzleHttp\Psr7\Utils;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Padosoft\AskMyDocsConnectorFreshdesk\Exceptions\FreshdeskApiException;
+use Psr\Http\Message\ResponseInterface;
 
 final class FreshdeskClient
 {
@@ -41,14 +45,15 @@ final class FreshdeskClient
         }
         $url = 'https://'.$this->domain.'/api/v2'.$path;
         $options = UrlPolicy::options($url) + ['allow_redirects' => false, 'stream' => true];
+        $maxBytes = (int) config('connector-freshdesk.http.max_json_bytes', 2_000_000);
         $attempts = max(1, min(3, (int) config('connector-freshdesk.http.attempts', 3)));
         for ($attempt = 1; $attempt <= $attempts; $attempt++) {
             $this->countRequest();
             try {
-                $response = Http::acceptJson()->withBasicAuth($this->apiKey, 'X')
+                $response = self::readOnly(Http::acceptJson()->withBasicAuth($this->apiKey, 'X')
                     ->connectTimeout((int) config('connector-freshdesk.http.connect_timeout', 5))
                     ->timeout((int) config('connector-freshdesk.http.timeout', 15))
-                    ->withOptions($options)->get($url, $query);
+                    ->withOptions($options), $maxBytes)->get($url, $query);
             } catch (ConnectionException) {
                 if ($attempt === $attempts) {
                     throw new \RuntimeException('Freshdesk connection timed out or could not be established.');
@@ -76,7 +81,7 @@ final class FreshdeskClient
                 }
                 throw new FreshdeskApiException($response->status(), max(1, (int) $response->header('Retry-After')), $fields);
             }
-            $body = self::readLimited($response, (int) config('connector-freshdesk.http.max_json_bytes', 2_000_000));
+            $body = self::readLimited($response, $maxBytes);
             try {
                 $data = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
             } catch (\JsonException) {
@@ -98,7 +103,7 @@ final class FreshdeskClient
             $this->countRequest();
             try {
                 // The API key is deliberately absent, including on same-domain downloads.
-                $response = Http::connectTimeout(5)->timeout(60)->withOptions($options)->get($url);
+                $response = self::readOnly(Http::connectTimeout(5)->timeout(60)->withOptions($options), $maxBytes)->get($url);
             } catch (ConnectionException) {
                 throw new \RuntimeException('Freshdesk attachment download failed.');
             }
@@ -128,12 +133,33 @@ final class FreshdeskClient
         $this->physicalRequests++;
     }
 
+    /** Guard the transport itself, including credential probes and attachment redirects. */
+    private static function readOnly(PendingRequest $request, int $maxBytes = 2_000_000): PendingRequest
+    {
+        return $request->beforeSending(static function (Request $outgoing): void {
+            if ($outgoing->method() !== 'GET') {
+                throw new \LogicException('Freshdesk transport only permits GET requests.');
+            }
+        })->withResponseMiddleware(static function (ResponseInterface $response) use ($maxBytes): ResponseInterface {
+            if ($response->getBody()->isSeekable()) {
+                return $response;
+            }
+
+            // HTTP observers (including Herd) may read the body before this client.
+            // Buffer within the size limit before those observers receive it.
+            return $response->withBody(Utils::streamFor(self::readLimited(new Response($response), $maxBytes)));
+        });
+    }
+
     public static function readLimited(Response $response, int $maxBytes): string
     {
         if ((int) $response->header('Content-Length') > $maxBytes) {
             throw new \RuntimeException('Freshdesk response exceeds the configured size limit.');
         }
         $stream = $response->toPsrResponse()->getBody();
+        if ($stream->isSeekable()) {
+            $stream->rewind();
+        }
         $bytes = '';
         while (! $stream->eof()) {
             $bytes .= $stream->read(min(65536, $maxBytes - strlen($bytes) + 1));

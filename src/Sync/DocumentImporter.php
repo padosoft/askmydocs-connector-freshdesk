@@ -9,8 +9,10 @@ use Illuminate\Support\Facades\Storage;
 use Padosoft\AskMyDocsConnectorBase\Contracts\ConnectorIngestionContract;
 use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorBase\Support\Metadata\SourceAwareMetadataBuilder;
+use Padosoft\AskMyDocsConnectorFreshdesk\CaseStudies\CaseStudyManager;
 use Padosoft\AskMyDocsConnectorFreshdesk\Http\FreshdeskClient;
 use Padosoft\AskMyDocsConnectorFreshdesk\Http\UrlPolicy;
+use Padosoft\AskMyDocsConnectorFreshdesk\Support\Features;
 use Padosoft\AskMyDocsConnectorFreshdesk\Support\Markdown;
 
 final readonly class DocumentImporter
@@ -22,6 +24,7 @@ final readonly class DocumentImporter
      */
     public function ticket(ConnectorInstallation $installation, SyncRun $run, FreshdeskClient $client, array $ticket): void
     {
+        Features::assertIngestion($installation->refresh());
         $private = (bool) data_get($installation->config_json, 'include_private_notes', true);
         $conversations = [];
         for ($page = 1; $page <= 300; $page++) {
@@ -36,10 +39,15 @@ final readonly class DocumentImporter
         }
         $visible = array_values(array_filter($conversations, fn ($row) => $private || ! ($row['private'] ?? false)));
         $body = Markdown::ticket($ticket, $visible, $private);
-        $this->write($installation, $run, 'ticket', (string) $ticket['id'], (string) ($ticket['subject'] ?? 'Ticket'), $body, 'text/markdown', null, [
+        $changed = $this->write($installation, $run, 'ticket', (string) $ticket['id'], (string) ($ticket['subject'] ?? 'Ticket'), $body, 'text/markdown', null, [
             'created_at' => $ticket['created_at'] ?? null, 'updated_at' => $ticket['updated_at'] ?? null, 'status' => $ticket['status'] ?? null,
             'priority' => $ticket['priority'] ?? null, 'tags' => $ticket['tags'] ?? [], 'private_notes_included' => $private,
         ]);
+        try {
+            app(CaseStudyManager::class)->schedule($installation, $ticket, $visible, $changed);
+        } catch (\Throwable) {
+            $this->ingestion->emitAudit('freshdesk', 'case_study_schedule_failed', $installation->id, ['ticket_id' => (string) $ticket['id']]);
+        }
         $attachments = (array) ($ticket['attachments'] ?? []);
         foreach ($visible as $row) {
             $attachments = array_merge($attachments, (array) ($row['attachments'] ?? []));
@@ -148,8 +156,9 @@ final readonly class DocumentImporter
     /**
      * @param  array<string|int,mixed>  $fields
      */
-    private function write(ConnectorInstallation $installation, SyncRun $run, string $kind, string $id, string $title, string $body, string $mime, ?string $parent, array $fields, string $extension = 'md'): void
+    private function write(ConnectorInstallation $installation, SyncRun $run, string $kind, string $id, string $title, string $body, string $mime, ?string $parent, array $fields, string $extension = 'md'): bool
     {
+        Features::assertIngestion($installation->refresh());
         if (preg_match('/^[1-9][0-9]*$/D', $id) !== 1) {
             throw new \RuntimeException('Freshdesk returned an invalid remote identifier.');
         }
@@ -162,7 +171,7 @@ final readonly class DocumentImporter
         if ($state !== null && $state->fingerprint === $fingerprint) {
             $state->forceFill(['last_seen_run_id' => $run->id])->save();
 
-            return;
+            return false;
         }
         $project = $installation->project_key ?: data_get($installation->config_json, 'project_key', config('kb.ingest.default_project', 'default'));
         $project = is_string($project) && $project !== '' ? $project : 'default';
@@ -187,10 +196,16 @@ final readonly class DocumentImporter
         $counts[$counter] = ($counts[$counter] ?? 0) + 1;
         $counts[$kind.'s'] = ($counts[$kind.'s'] ?? 0) + 1;
         $run->counts = $counts;
+
+        return true;
     }
 
     public function delete(ConnectorInstallation $installation, SyncRun $run, string $kind, string $id): void
     {
+        Features::assertIngestion($installation->refresh());
+        if ($kind === 'ticket') {
+            app(CaseStudyManager::class)->cancel($installation, $id);
+        }
         foreach ($this->states($installation)->where(function ($query) use ($kind, $id): void {
             $query->where(fn ($q) => $q->where('kind', $kind)->where('remote_id', $id));
             if ($kind === 'ticket') {
@@ -203,6 +218,7 @@ final readonly class DocumentImporter
 
     private function remove(ConnectorInstallation $installation, SyncRun $run, SourceState $state): void
     {
+        Features::assertIngestion($installation->refresh());
         $this->ingestion->softDeleteByRemoteId($installation, 'freshdesk_remote_id', $installation->id.':'.$state->kind.':'.$state->remote_id);
         $state->delete();
         $counts = $run->counts;

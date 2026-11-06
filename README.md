@@ -46,7 +46,40 @@ php artisan migrate
 
 Il manifest locale e il suo lockfile sono esclusi dai commit. Lo script conserva gli override esistenti e aggiunge un repository `path` con symlink. Il manifest condiviso continua a richiedere `^1.0`; l'override locale usa `dev-main`. Usare `COMPOSER=composer.local.json` per i comandi di sviluppo; `composer install` ripristina le dipendenze del lockfile condiviso.
 
-Aprire [AskMyDocsDev su Herd](https://askmydocsdev.test), scegliere **Connectors → Freshdesk**, inserire dominio `azienda.freshdesk.com`, API key, etichetta dell'account e progetto. Il modulo verifica `/api/v2/agents/me` prima di salvare la chiave nel vault cifrato. **Sync now** accoda o riprende la sincronizzazione ordinaria; le impostazioni espongono la finestra, le note private e i limiti degli allegati. Gli account dello stesso tenant possono avere installazioni distinte.
+Aprire [AskMyDocsDev su Herd](https://askmydocsdev.test), scegliere **Connectors → Freshdesk**, inserire dominio `azienda.freshdesk.com`, API key, etichetta dell'account e progetto. Il modulo verifica `/api/v2/agents/me` prima di salvare la chiave nel vault cifrato. **Sync now** accoda o riprende la sincronizzazione ordinaria; **Edit → Sync settings** espone gli interruttori delle funzionalità, la finestra, le note private e i limiti degli allegati. Gli account dello stesso tenant possono avere installazioni distinte.
+
+### Attivare le funzionalità per connessione
+
+`FreshdeskConnector::connectionSettingsSchema()` espone tre checkbox nel gruppo **Features**. La UI generica di AskMyDocs le legge da `connection_settings_schema` e usa i valori correnti di `settings`; ciascuna preferenza è salvata in `config_json` della singola installazione.
+
+| Impostazione | Default dell'installazione | Comportamento |
+| --- | --- | --- |
+| `ingestion.enabled` | `true` | Abilita ingest ordinario e storico. Se disattivato, lo scheduler salta l'importazione, gli avvii manuali vengono rifiutati e i lotti pendenti passano a `paused`, conservando checkpoint e watermark. I documenti già importati restano nella KB. |
+| `chat_tools.enabled` | `true` | Abilita tutti i nove strumenti live della connessione. Se disattivato, spariscono dal catalogo e le chiamate successive, anche attraverso un tool già selezionato, vengono bloccate. Non dipende dall'ingest. |
+| `case_studies.enabled` | `true` | Abilita generazione e uso delle schede problema → causa → intervento → esito. Richiede il supporto e l'abilitazione globale dell'host; la generazione richiede anche l'ingest. Se disattivato, le schede conservate vengono escluse da indicizzazione e ricerca e i job di generazione si sospendono. |
+
+Gli interruttori hanno effetto al salvataggio, prima delle richieste successive e delle nuove consegne alla pipeline. Una richiesta già in corso può terminare; i documenti grezzi già consegnati alla pipeline KB possono completare l'indicizzazione. Verifica credenziali e health check rimangono letture GET disponibili per diagnosticare la connessione.
+
+Riattivare l'ingest permette di riprendere lo stesso import con **Sync now**, **Prendi tutto** o il successivo passaggio dello scheduler. Al successivo avvio della sincronizzazione vengono riaccodate anche le generazioni di schede sospese con origine ancora valida, senza ripetere i segmenti già elaborati. Disattivare solo l'ingest conserva la consultabilità delle schede valide già indicizzate; disattivare le schede ne sospende anche l'uso, fino alla riattivazione. L'abilitazione delle schede non crea un backlog per ticket invariati mai associati a una scheda.
+
+Le impostazioni globali `connector-freshdesk.chat_tools.enabled` e `connector-freshdesk.case_studies.enabled` prevalgono sugli interruttori dell'installazione. Nel pacchetto autonomo le schede restano disabilitate globalmente per default, finché l'host non fornisce un generatore.
+
+La UI salva una modifica parziale attraverso l'API amministrativa di **AskMyDocs**:
+
+```http
+PATCH /api/admin/connectors/42
+Content-Type: application/json
+
+{
+  "settings": {
+    "ingestion": { "enabled": true },
+    "chat_tools": { "enabled": false },
+    "case_studies": { "enabled": true }
+  }
+}
+```
+
+I campi omessi conservano il valore precedente; `false` è una disattivazione esplicita. Questa chiamata aggiorna solo l'installazione locale di AskMyDocs. Tutte le richieste verso Freshdesk continuano a usare esclusivamente **GET**.
 
 Le API REST v2 di Freshdesk richiedono [Basic Auth con API key](https://developers.freshdesk.com/api/#authentication). OAuth per accedere a queste API non è disponibile: [Freshworks lo ha chiarito](https://community.freshworks.dev/t/how-to-use-oauth-authentication-mechanism-for-freshdesk-api/1691). Gli esempi OAuth delle app Marketplace autorizzano servizi esterni, come Google Sheets, e non sostituiscono questa autenticazione. Verifica delle fonti: 8 ottobre 2026.
 
@@ -61,21 +94,50 @@ La sincronizzazione ordinaria e il recupero dello storico usano la stessa pipeli
 | Modalità | Avvio | Periodo dei ticket |
 | --- | --- | --- |
 | Ordinaria (`window`) | `SyncManager::start($installation)` | Alla prima scansione usa `date_window_days`, con default di 90 giorni. Le scansioni successive usano il watermark dell'ultima scansione completata entro questa finestra; ampliarla permette di recuperare anche il periodo aggiunto. |
-| Storico (`history`, **Prendi tutto**) | `SyncManager::start($installation, history: true)` | Recupera i ticket enumerabili dalle API dal `1970-01-01T00:00:00Z` fino all'avvio della scansione, indipendentemente dalla finestra ordinaria. |
+| Storico (`history`, **Prendi tutto** / **Importa storico dalla data**) | `SyncManager::start($installation, history: true)` | Recupera i ticket aggiornati a partire da `history.start_date` (mezzanotte UTC), fino all'avvio della scansione. Se la data è vuota, parte dal `1970-01-01T00:00:00Z`. La finestra ordinaria resta indipendente. |
 
 Entrambe le modalità enumerano gli articoli pubblicati senza applicare la finestra temporale dei ticket.
 
-`FreshdeskConnector::syncFull($installationId)` e `syncIncremental($installationId, $since)` chiamano entrambi `SyncManager::start($installation)` e accodano o riprendono una scansione. Il nome `syncFull` non attiva il recupero dello storico: per quello serve `history: true`. Il parametro `$since` di `syncIncremental` non viene usato; il punto di ripresa e il watermark sono gestiti dai checkpoint persistenti del pacchetto. Se esiste già una scansione ordinaria o storica in coda, in corso o fallita, l'avvio ordinario la riusa e riprende quella fallita.
+Per scaricare e fare l'ingest dello storico da una data, aprire **Edit → Sync settings → Historical import**, scegliere **Historical import start date (UTC)**, salvare e riaprire le impostazioni per premere **Importa storico dalla data**. Il campo è facoltativo e accetta una data valida in formato `YYYY-MM-DD`, dal 1970 fino a oggi (UTC). Cancellarlo ripristina **Prendi tutto** per i nuovi import.
+
+La data viene inviata a Freshdesk come `updated_since`: seleziona i ticket in base all'ultimo aggiornamento, non alla creazione. Un ticket creato prima della data ma aggiornato dopo può quindi essere incluso. Per ogni ticket selezionato vengono importate le conversazioni ammesse dalla policy e gli allegati compatibili, anche se precedenti alla data. Il filtro non si applica agli articoli pubblicati né elimina i documenti già presenti nella KB. Tutte le richieste verso Freshdesk restano GET.
+
+La stessa impostazione può essere salvata tramite l'API **locale di AskMyDocs**:
+
+```http
+PATCH /api/admin/connectors/{installationId}
+Content-Type: application/json
+
+{"settings":{"history":{"start_date":"2024-01-01"}}}
+```
+
+Avviare poi `POST /api/admin/connectors/{installationId}/actions/historical-import`. Per tornare allo storico completo, inviare `start_date: null`. Questi salvataggi e avvii sono interni ad AskMyDocs: non effettuano scritture su Freshdesk.
+
+`FreshdeskConnector::syncFull($installationId)` e `syncIncremental($installationId, $since)` chiamano entrambi `SyncManager::start($installation)` quando l'ingest è abilitato e accodano o riprendono una scansione. Il nome `syncFull` non attiva il recupero dello storico: per quello serve `history: true`. Il parametro `$since` di `syncIncremental` non viene usato; il punto di ripresa e il watermark sono gestiti dai checkpoint persistenti del pacchetto. Se esiste già una scansione ordinaria o storica in coda, in corso, fallita o sospesa, l'avvio ordinario la riusa e riprende quella fallita o sospesa.
 
 `SyncManager` conserva lo stato nelle tabelle `freshdesk_sync_runs` e `freshdesk_source_states`, isolate per tenant e installazione. `ProcessSyncBatch` lavora a lotti con un lock atomico per installazione. Identificativi remoti, percorsi stabili e impronte dei contenuti evitano di consegnare nuovamente documenti invariati. L'app applica l'upsert dei documenti per percorso durante l'ingestione: anche una ripetizione dopo un arresto tra dispatch e checkpoint conserva l'identità del documento.
 
 Il checkpoint salva fase, pagina e ticket o articoli ancora da elaborare. Il watermark temporale viene consolidato dopo il completamento dell'intera scansione, prendendo l'ora d'inizio come limite superiore dei ticket. Le sincronizzazioni ordinarie successive sovrappongono 120 secondi al watermark completato entro la finestra configurata. Al limite delle 300 pagine, una scansione ordinata per `updated_at` riparte dall'ultimo timestamp meno un secondo; se non riesce ad avanzare, mostra un errore e resta incompleta.
 
-**Prendi tutto** è un recupero storico una tantum: conserva `date_window_days`, quindi le sincronizzazioni ordinarie successive mantengono la finestra configurata. Una seconda richiesta durante un recupero storico già in coda o in corso restituisce la stessa scansione; un recupero fallito riprende dal suo checkpoint. Il registro generico delle azioni dell'app espone stato, conteggi ed errore; i conteggi riguardano i documenti consegnati alla pipeline, che completa estrazione e indicizzazione in coda.
+L'importazione storica è un recupero una tantum: conserva `date_window_days`, quindi le sincronizzazioni ordinarie successive mantengono la finestra configurata, senza saltare ticket precedenti a un import storico più recente. Una seconda richiesta durante un recupero storico già in coda o in corso restituisce la stessa scansione; un recupero fallito o sospeso riprende dal proprio checkpoint e dalla propria data originale. Modificare o cancellare `history.start_date` vale per il prossimo nuovo import, dopo il completamento o l'annullamento di quello esistente. Il registro generico delle azioni dell'app espone stato, conteggi, errore e `updated_since`, conservato anche dopo il completamento; i conteggi riguardano i documenti consegnati alla pipeline, che completa estrazione e indicizzazione in coda.
 
 I ticket non vengono rimossi quando escono dalla finestra. Una cancellazione viene applicata quando il filtro Freshdesk `deleted` la conferma. Per un articolo scomparso dall'elenco viene richiesto il dettaglio: `404` conferma la rimozione; un articolo passato a bozza viene rimosso. Un `404` di ticket non basta, perché può trattarsi di un ticket archiviato. Disattivare le note private provoca, alla sincronizzazione successiva, anche l'aggiornamento dei ticket storici già importati.
 
 Freshdesk non enumera globalmente i ticket archiviati accessibili soltanto con un ID noto: **Prendi tutto** copre lo storico scopribile dalle API, non un export completo dell'account. Documentazione di riferimento: [API REST v2 Freshdesk](https://developers.freshdesk.com/api/).
+
+## Schede dei casi per la ricerca di problemi simili
+
+Un host che implementa `CaseStudies\CaseStudyGeneratorContract` può abilitare `connector-freshdesk.case_studies.enabled`. AskMyDocsDev fornisce l'adattatore OpenRouter e abilita la funzione per default; `CONNECTOR_FRESHDESK_CASE_STUDIES_ENABLED=false` la disabilita. Nel pacchetto autonomo il default è `false`. `CONNECTOR_FRESHDESK_CASE_STUDIES_MODEL` permette di scegliere il modello di sintesi; l'host usa altrimenti il proprio modello per il preprocessore delle domande.
+
+Dopo l'importazione di un ticket **nuovo o modificato**, `GenerateCaseStudy` produce un documento separato con **problema → causa → intervento → esito**. Ogni campo contiene una sintesi breve e citazioni letterali della descrizione o delle conversazioni, con ID e data della conversazione e collegamento al ticket originale. La redazione dei dati personali e l'esclusione delle note private avvengono prima di inviare il testo al generatore. Gli allegati rimangono documenti separati e non sono usati per compilare questa prima versione della scheda.
+
+L'host verifica con Jev tramite OpenRouter prima i fatti nel contesto originale dei segmenti letti, poi il supporto e i conflitti della sintesi finale. Il pacchetto verifica identificativi e appartenenza letterale delle citazioni allo snapshot. Una causa ipotizzata, un intervento soltanto suggerito o lo stato “chiuso” non bastano a documentare rispettivamente causa, intervento o successo. I campi senza supporto sufficiente diventano **non documentato**; conflitti irrisolti diventano **informazioni contrastanti**. La verifica semantica è probabilistica e riusa la soglia configurata nell'host: va valutata sui casi reali, non garantisce l'assenza di errori del modello.
+
+L'estrazione attraversa tutte le conversazioni ammesse, a segmenti UTF-8 completi di massimo 10.000 byte. La sintesi e la verifica ricevono i fatti estratti; se superano il budget di verifica dell'host, la generazione fallisce esplicitamente senza scartare evidenze. I checkpoint nella tabella `freshdesk_case_studies` permettono di riprendere le estrazioni completate dopo errori; l'importazione del ticket originale prosegue indipendentemente. `ready` indica che la scheda è stata generata e consegnata alla pipeline, non che l'indicizzazione sia già terminata.
+
+Nell'indice AskMyDocs, la scheda ha tipo `freshdesk_case_study` e provenienza automatica. I quattro campi restano in un unico chunk entro il limite della pipeline; le citazioni hanno chunk separati. La domanda “come abbiamo risolto problemi simili?” usa la normale ricerca semantica della KB anche sulle schede: sintomi, causa e intervento sono vicini nello stesso testo indicizzato. Il lettore delle fonti usa le citazioni originali verificate come evidenza per rispondere. Le schede obsolete sono bloccate all'indicizzazione e alla consultazione quando cambia la revisione del ticket, il progetto, il dominio, la policy delle note private o lo stato dell'installazione; una cancellazione confermata annulla anche i job pendenti.
+
+Abilitare questa funzione **non genera automaticamente schede per il backlog già importato e invariato**, neppure con una nuova scansione storica. Le schede vengono create per ticket che entrano nell'ingest per la prima volta o cambiano; una generazione fallita già registrata può riprendere alla successiva lettura del ticket. Applicare la migrazione del pacchetto e usare il worker della coda `freshdesk` descritto sotto. Il catalogo live resta composto dagli stessi **nove strumenti**.
 
 ## Contratto d'uso per l'orchestratore
 
@@ -137,6 +199,9 @@ Usare una coda asincrona e un cache store con lock atomici, per esempio Redis. L
 
 | Configurazione | Default | Effetto |
 | --- | --- | --- |
+| Installazione: `ingestion.enabled` | `true` | Abilita importazioni ordinarie e storiche; disabilitazione con checkpoint conservati |
+| Installazione: `chat_tools.enabled` | `true` | Abilita i nove strumenti live; indipendente dall'ingest e subordinato al flag globale |
+| Installazione: `case_studies.enabled` | `true` | Generazione e uso delle schede, subordinati al supporto e al flag globale dell'host |
 | Installazione: `date_window_days` | `90` | Periodo ordinario, da 1 a 36500 giorni |
 | Installazione: `include_private_notes` | `true` | Note private nel RAG e nelle conversazioni live |
 | Installazione: `attachments.enabled` | `true` | Scarica allegati compatibili |
@@ -146,8 +211,12 @@ Usare una coda asincrona e un cache store con lock atomici, per esempio Redis. L
 | Pacchetto: `http.attempts` | `3` | Tentativi per problemi di connessione e risposte 5xx |
 | Pacchetto: `sync.batch_items` / `batch_seconds` | `5` / `60` | Passaggi e durata indicativa del lotto; il singolo ticket può durare di più |
 | Pacchetto: `chat_tools.max_result_bytes` | `65536` | Dimensione massima della risposta live |
+| Pacchetto: `case_studies.enabled` | `false` (AskMyDocsDev: `true`) | Schede per ticket nuovi/modificati; richiede l'adattatore dell'host |
+| Pacchetto: `case_studies.model` | `null` | Modello OpenRouter scelto dall'host se non specificato |
 
 I `401` e `403` vengono riportati senza ripetere la richiesta. I `429` mantengono il checkpoint e rinviano il lotto per i secondi indicati da `Retry-After`; nella chat vengono restituiti come errore, senza attesa bloccante. Gli errori omettono corpi upstream e credenziali.
+
+Tutte le richieste verso Freshdesk usano **GET**; il trasporto rifiuta metodi di scrittura. La generazione delle schede scrive soltanto nello storage e nel database dell’host e usa OpenRouter per l’AI, senza passare credenziali Freshdesk al generatore.
 
 I domini devono essere HTTPS `*.freshdesk.com`, senza porte personalizzate o credenziali nell'URL. I download passano da un'allowlist di host, controlli DNS su indirizzi pubblici e pinning dell'indirizzo; ogni redirect viene rivalidato. La API key non viene inoltrata agli allegati, neppure sul dominio dell'account. Gli URL firmati non sono conservati nei metadati. Modificare `attachments.allowed_hosts` soltanto per CDN effettivamente usati dal proprio account; `http.resolve_dns=false` è riservato ai test simulati.
 
@@ -162,7 +231,7 @@ vendor/bin/pint --test
 
 Per sviluppare usando il connector-base già installato nell'app, un `composer.local.json` ignorato può aggiungere un repository `path` verso `AskMyDocsDev/vendor/padosoft/askmydocs-connector-base`, con versione locale `1.6.0`. In quel caso usare `COMPOSER=composer.local.json composer install`.
 
-La suite usa Testbench, SQLite e HTTP simulato. Copre verifica e modifica delle credenziali, isolamento, note private, articoli annidati, download e OCR, limiti, retry, paginazione, ripresa, cancellazioni e assenza di nuove consegne per contenuti invariati. La matrice CI prevede Laravel 12/13 e PHP 8.3/8.4. La validazione effettuata localmente è su Laravel 13 e PHP 8.4; il collaudo con un account reale richiede dominio e API key nel modulo credenziali.
+La suite usa Testbench, SQLite e HTTP simulato. Copre verifica e modifica delle credenziali, isolamento, interruttori per installazione, sospensione e ripresa senza HTTP o generazioni aggiuntive, note private, articoli annidati, download e OCR, limiti, retry, paginazione, ripresa, cancellazioni e assenza di nuove consegne per contenuti invariati. La matrice CI prevede Laravel 12/13 e PHP 8.3/8.4. La validazione effettuata localmente è su Laravel 13 e PHP 8.4; il collaudo con un account reale richiede dominio e API key nel modulo credenziali.
 
 Le illustrazioni sono asset originali. Il README riusa il logo Freshdesk; l'icona dell'interfaccia è un'interpretazione editoriale coerente con gli altri connettori. [Provenienza e diritti del marchio](public/icons/README.md) · [Prompt delle illustrazioni](docs/readme/prompts.md) · [Changelog](CHANGELOG.md).
 

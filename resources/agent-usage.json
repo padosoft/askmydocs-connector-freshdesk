@@ -27,7 +27,7 @@
     },
     {
       "id": "documented_solutions",
-      "intent": "Documented procedures, similar resolved cases, historical explanations and attachment content. Search ingested documents semantically. Indexed historical observations do not establish a ticket's current operational state.",
+      "intent": "Documented procedures, similar resolved cases, historical explanations and attachment content. Search ingested documents semantically, including verified problem/cause/intervention/outcome case sheets where available. Use their original quotations to support conclusions; missing or conflicting fields do not establish a cause or successful fix. Indexed historical observations do not establish a ticket's current operational state.",
       "mode": "indexed",
       "tools": [],
       "examples": ["Come abbiamo risolto problemi simili?", "Qual è la procedura documentata per questo errore?", "Find previous cases about this attachment's contents"]

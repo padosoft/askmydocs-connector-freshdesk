@@ -8,6 +8,7 @@ use Closure;
 use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
 use Padosoft\AskMyDocsConnectorFreshdesk\Exceptions\FreshdeskApiException;
+use Padosoft\AskMyDocsConnectorFreshdesk\Support\Features;
 use Padosoft\AskMyDocsConnectorFreshdesk\Support\Markdown;
 use Padosoft\AskMyDocsConnectorFreshdesk\Sync\SyncManager;
 
@@ -26,7 +27,7 @@ final readonly class FreshdeskTools
         $tools = [];
         $installations = ConnectorInstallation::query()->where('tenant_id', $this->tenants->current())->where('connector_name', 'freshdesk')->where('status', 'active')->get();
         foreach ($installations as $installation) {
-            if (! $this->matchesProject($installation, $projectKey)) {
+            if (! Features::live($installation) || ! $this->matchesProject($installation, $projectKey)) {
                 continue;
             }
             foreach ($this->definitions() as $action => $definition) {
@@ -76,7 +77,15 @@ final readonly class FreshdeskTools
         }
         $arguments = FreshdeskArguments::normalize($action, $arguments);
         $installation = $this->sync->installation((int) $tool['installation_id']);
-        $client = $this->sync->client($installation, $beforeRequest);
+        $client = $this->sync->client($installation, function () use ($installation, $projectKey, $beforeRequest): void {
+            $installation->refresh();
+            if (! Features::live($installation) || $installation->status !== 'active' || ! $this->matchesProject($installation, $projectKey)) {
+                throw new \RuntimeException('Freshdesk live consultation is no longer available for this account.');
+            }
+            if ($beforeRequest !== null) {
+                $beforeRequest();
+            }
+        });
         $page = (int) ($arguments['page'] ?? 1);
         $id = (int) ($arguments['id'] ?? 0);
         try {

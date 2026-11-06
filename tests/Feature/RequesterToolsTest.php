@@ -5,12 +5,34 @@ namespace Padosoft\AskMyDocsConnectorFreshdesk\Tests\Feature;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Support\Facades\Http;
 use Padosoft\AskMyDocsConnectorBase\Auth\OAuthCredentialVault;
+use Padosoft\AskMyDocsConnectorFreshdesk\Http\FreshdeskClient;
 use Padosoft\AskMyDocsConnectorFreshdesk\Tests\TestCase;
 use Padosoft\AskMyDocsConnectorFreshdesk\Tools\FreshdeskArguments;
 use Padosoft\AskMyDocsConnectorFreshdesk\Tools\FreshdeskTools;
 
 final class RequesterToolsTest extends TestCase
 {
+    public function test_all_nine_live_tools_probe_and_download_are_strictly_read_only(): void
+    {
+        Http::preventStrayRequests();
+        Http::fake(fn ($request) => Http::response(str_contains($request->url(), '/download') ? 'attachment' : ['id' => 42, 'status' => 2]));
+        $installation = $this->installation();
+        app(OAuthCredentialVault::class)->setCredentials($installation->id, accessToken: 'secret-key');
+        $arguments = ['list_tickets' => [], 'search_tickets' => ['query' => 'status:2'], 'get_ticket' => ['id' => 42],
+            'list_conversations' => ['id' => 42], 'search_contacts' => ['term' => 'Anne'], 'get_contact' => ['id' => 42],
+            'search_agents' => ['term' => 'Anne'], 'search_articles' => ['term' => 'Guide'], 'get_article' => ['id' => 42]];
+        $this->assertCount(9, app(FreshdeskTools::class)->catalog('support'));
+        foreach ($arguments as $action => $input) {
+            $result = app(FreshdeskTools::class)->execute('freshdesk_'.$installation->id.'_'.$action, $input, 'support');
+            $this->assertArrayNotHasKey('error', $result);
+        }
+        $client = new FreshdeskClient('example.freshdesk.com', 'secret-key');
+        $client->get('/agents/me');
+        $client->download('https://cdn.freshdesk.com/download', 100);
+        Http::assertSentCount(11);
+        Http::assertNotSent(fn ($request) => $request->method() !== 'GET');
+    }
+
     private function executeTool(string $action, array $arguments): array
     {
         $installation = $this->installation();

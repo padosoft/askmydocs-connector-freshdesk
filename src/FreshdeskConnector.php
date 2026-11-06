@@ -14,6 +14,7 @@ use Padosoft\AskMyDocsConnectorBase\HealthStatus;
 use Padosoft\AskMyDocsConnectorBase\Support\CredentialField;
 use Padosoft\AskMyDocsConnectorBase\SyncResult;
 use Padosoft\AskMyDocsConnectorFreshdesk\Http\FreshdeskClient;
+use Padosoft\AskMyDocsConnectorFreshdesk\Support\Features;
 use Padosoft\AskMyDocsConnectorFreshdesk\Sync\SyncManager;
 
 final class FreshdeskConnector extends BaseConnector implements SupportsConnectionSettings, SupportsCredentialForm
@@ -45,7 +46,11 @@ final class FreshdeskConnector extends BaseConnector implements SupportsConnecti
     public function connectionSettingsSchema(): array
     {
         return [
+            (new CredentialField('ingestion.enabled', 'Import into knowledge base', 'checkbox', 'config', default: true, help: 'Enables ordinary sync and Fetch all. Disabling pauses imports and preserves existing documents and checkpoints.', group: 'Features'))->toArray(),
+            (new CredentialField('chat_tools.enabled', 'Live consultation', 'checkbox', 'config', default: true, help: 'Makes the nine read-only Freshdesk tools available to authenticated chat, independently of ingestion.', group: 'Features'))->toArray(),
+            (new CredentialField('case_studies.enabled', 'Problem → cause → intervention → outcome sheets', 'checkbox', 'config', default: true, help: 'Enables generation and use of verified case sheets. Generation requires ingestion and host support; existing tickets are not backfilled automatically.', group: 'Features'))->toArray(),
             (new CredentialField('date_window_days', 'Ticket history (days)', 'number', 'config', default: 90, help: 'Tickets updated within this period. Use Fetch all for a one-time historical import.', group: 'Sync'))->toArray(),
+            (new CredentialField('history.start_date', 'Historical import start date (UTC)', 'date', 'config', help: 'Tickets updated from this date, including their conversations and attachments. Leave empty for all available history. Save before starting the import. Published articles are not filtered by date.', group: 'Historical import'))->toArray() + ['min' => '1970-01-01', 'max' => now('UTC')->toDateString()],
             (new CredentialField('include_private_notes', 'Include private notes', 'checkbox', 'config', default: true, group: 'Content'))->toArray(),
             (new CredentialField('attachments.enabled', 'Import attachments', 'checkbox', 'config', default: true, group: 'Attachments'))->toArray(),
             (new CredentialField('attachments.max_size_mb', 'Maximum file size (MiB)', 'number', 'config', default: 25, group: 'Attachments'))->toArray(),
@@ -105,7 +110,9 @@ final class FreshdeskConnector extends BaseConnector implements SupportsConnecti
     private function enqueue(int $installationId): SyncResult
     {
         $installation = $this->loadInstallation($installationId);
-        app(SyncManager::class)->start($installation);
+        if (Features::ingestion($installation)) {
+            app(SyncManager::class)->start($installation);
+        }
 
         return new SyncResult(0, 0, 0, [], Carbon::parse($installation->last_sync_at ?? '1970-01-01T00:00:00Z'));
     }

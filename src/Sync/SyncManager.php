@@ -13,8 +13,12 @@ use Padosoft\AskMyDocsConnectorBase\Auth\OAuthCredentialVault;
 use Padosoft\AskMyDocsConnectorBase\Contracts\ConnectorIngestionContract;
 use Padosoft\AskMyDocsConnectorBase\Models\ConnectorInstallation;
 use Padosoft\AskMyDocsConnectorBase\Support\TenantContext;
+use Padosoft\AskMyDocsConnectorFreshdesk\CaseStudies\CaseStudyManager;
 use Padosoft\AskMyDocsConnectorFreshdesk\Exceptions\FreshdeskApiException;
+use Padosoft\AskMyDocsConnectorFreshdesk\Exceptions\IngestionDisabled;
+use Padosoft\AskMyDocsConnectorFreshdesk\Exceptions\InvalidHistoryStartDate;
 use Padosoft\AskMyDocsConnectorFreshdesk\Http\FreshdeskClient;
+use Padosoft\AskMyDocsConnectorFreshdesk\Support\Features;
 
 final readonly class SyncManager
 {
@@ -41,6 +45,7 @@ final readonly class SyncManager
     public function start(ConnectorInstallation $installation, bool $history = false): SyncRun
     {
         $installation = $this->installation($installation->id);
+        Features::assertIngestion($installation);
         if (! in_array($installation->status, ['active', 'errored'], true)) {
             throw new \RuntimeException('Enable the Freshdesk installation before importing.');
         }
@@ -52,11 +57,11 @@ final readonly class SyncManager
         $run = DB::transaction(function () use ($installation, $mode, $history, &$dispatch): SyncRun {
             ConnectorInstallation::query()->whereKey($installation->id)->where('tenant_id', $installation->tenant_id)->lockForUpdate()->firstOrFail();
             $query = $this->runs($installation);
-            $query->whereIn('status', ['queued', 'running', 'failed']);
+            $query->whereIn('status', ['queued', 'running', 'failed', 'paused']);
             $query->latest('id');
             $existing = $query->get()->first(fn ($candidate) => ! $history || $candidate->mode === 'history');
             if ($existing !== null) {
-                if ($existing->status === 'failed') {
+                if (in_array($existing->status, ['failed', 'paused'], true)) {
                     $existing->forceFill(['status' => 'queued', 'error' => null])->save();
                     $dispatch = true;
                 }
@@ -64,7 +69,12 @@ final readonly class SyncManager
                 return $existing;
             }
             $window = max(1, min(36500, (int) data_get($installation->config_json, 'date_window_days', 90)));
-            $since = $history ? Carbon::create(1970, 1, 1, 0, 0, 0, 'UTC') : Carbon::now('UTC')->subDays($window);
+            $scanStarted = Carbon::now('UTC');
+            $since = $history ? $this->historySince($installation) : $scanStarted->copy()->subDays($window);
+            // A recent historical import must not skip older tickets in the ordinary window.
+            $coverageDays = $history
+                ? (data_get($installation->config_json, 'history.start_date') ? (int) $since->diffInDays($scanStarted) : 36500)
+                : $window;
             $previous = $this->runs($installation)->where('status', 'completed')->latest('scan_started_at')->first();
             $projection = hash('sha256', json_encode([
                 'private' => data_get($installation->config_json, 'include_private_notes', true),
@@ -80,15 +90,34 @@ final readonly class SyncManager
 
             return SyncRun::query()->create([
                 'tenant_id' => $installation->tenant_id, 'installation_id' => $installation->id, 'mode' => $mode,
-                'status' => 'queued', 'scan_started_at' => now(), 'counts' => [],
-                'checkpoint' => ['phase' => 'tickets', 'since' => $since->toIso8601ZuluString(), 'initial_since' => $since->toIso8601ZuluString(), 'page' => 1, 'pending' => [], 'window_days' => $history ? 36500 : $window, 'projection_hash' => $projection, 'refresh_tickets' => $refresh, 'refresh_cursor' => 0],
+                'status' => 'queued', 'scan_started_at' => $scanStarted, 'counts' => [],
+                'checkpoint' => ['phase' => 'tickets', 'since' => $since->toIso8601ZuluString(), 'initial_since' => $since->toIso8601ZuluString(), 'page' => 1, 'pending' => [], 'window_days' => $coverageDays, 'projection_hash' => $projection, 'refresh_tickets' => $refresh, 'refresh_cursor' => 0],
             ]);
         });
         if ($dispatch) {
             ProcessSyncBatch::dispatch($run->id, $installation->tenant_id);
         }
+        app(CaseStudyManager::class)->resume($installation);
 
         return $run;
+    }
+
+    private function historySince(ConnectorInstallation $installation): Carbon
+    {
+        $date = data_get($installation->config_json, 'history.start_date');
+        if ($date === null || $date === '') {
+            return Carbon::create(1970, 1, 1, 0, 0, 0, 'UTC');
+        }
+        try {
+            $since = is_string($date) ? Carbon::createFromFormat('!Y-m-d', $date, 'UTC') : null;
+        } catch (\Throwable) {
+            $since = null;
+        }
+        if ($since === null || $since->format('Y-m-d') !== $date || $date < '1970-01-01' || $since->greaterThan(Carbon::now('UTC')->startOfDay())) {
+            throw new InvalidHistoryStartDate('Choose a valid historical import start date in YYYY-MM-DD format, between 1970-01-01 and today (UTC).');
+        }
+
+        return $since;
     }
 
     public function latest(ConnectorInstallation $installation): ?SyncRun
@@ -100,7 +129,7 @@ final readonly class SyncManager
 
     public function cancel(ConnectorInstallation $installation): void
     {
-        $this->runs($this->installation($installation->id))->whereIn('status', ['queued', 'running', 'failed'])->update(['status' => 'cancelled']);
+        $this->runs($this->installation($installation->id))->whereIn('status', ['queued', 'running', 'failed', 'paused'])->update(['status' => 'cancelled']);
     }
 
     /** Returns seconds before the next batch; null means finished. */
@@ -122,8 +151,9 @@ final readonly class SyncManager
 
                 return null;
             }
+            Features::assertIngestion($installation);
             $run->forceFill(['status' => 'running', 'error' => null])->save();
-            $client = $this->client($installation);
+            $client = $this->client($installation, static fn () => Features::assertIngestion($installation->refresh()));
             $started = microtime(true);
             $items = max(1, min(100, (int) config('connector-freshdesk.sync.batch_items', 5)));
             for ($i = 0; $i < $items && microtime(true) - $started < (int) config('connector-freshdesk.sync.batch_seconds', 60); $i++) {
@@ -132,6 +162,7 @@ final readonly class SyncManager
 
                     return null;
                 }
+                Features::assertIngestion($installation->refresh());
                 if ($this->step($installation, $run, $client)) {
                     $run->forceFill(['status' => 'completed', 'finished_at' => now(), 'error' => null])->save();
                     $lastSync = $installation->fresh()->last_sync_at;
@@ -149,6 +180,10 @@ final readonly class SyncManager
             $run->forceFill(['status' => 'queued'])->save();
 
             return 1;
+        } catch (IngestionDisabled) {
+            $run->forceFill(['status' => 'paused', 'error' => null])->save();
+
+            return null;
         } catch (FreshdeskApiException $exception) {
             $run->forceFill(['status' => $exception->status === 429 ? 'queued' : 'failed', 'error' => $exception->getMessage()])->save();
             if ($exception->status === 429) {
@@ -222,7 +257,7 @@ final readonly class SyncManager
                 $next = $phase === 'tickets'
                     ? ['phase' => 'deleted', 'since' => $run->checkpoint['initial_since'] ?? $run->checkpoint['since'], 'page' => 1, 'pending' => [], 'window_days' => $cp['window_days']]
                     : ['phase' => 'categories', 'categories' => [], 'page' => 1, 'window_days' => $cp['window_days']];
-                $cp = $next + ['projection_hash' => $cp['projection_hash'] ?? null];
+                $cp = $next + ['projection_hash' => $cp['projection_hash'] ?? null, 'initial_since' => $cp['initial_since'] ?? null];
                 $run->checkpoint = $cp;
 
                 return false;

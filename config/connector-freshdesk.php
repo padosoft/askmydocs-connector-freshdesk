@@ -7,4 +7,5 @@ return [
     'attachments' => ['allowed_hosts' => ['*.freshdesk.com', '*.freshworks.com', 's3.amazonaws.com', '*.s3.amazonaws.com', '*.s3.*.amazonaws.com']],
     'sync' => ['batch_items' => 5, 'batch_seconds' => 60, 'queue' => env('CONNECTOR_FRESHDESK_QUEUE', 'freshdesk'), 'connection' => env('CONNECTOR_FRESHDESK_CONNECTION'), 'overlap_seconds' => 120, 'middleware' => []],
     'chat_tools' => ['enabled' => true, 'max_result_bytes' => 65_536],
+    'case_studies' => ['enabled' => env('CONNECTOR_FRESHDESK_CASE_STUDIES_ENABLED', false), 'model' => env('CONNECTOR_FRESHDESK_CASE_STUDIES_MODEL')],
 ];
